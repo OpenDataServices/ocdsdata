@@ -1,0 +1,3 @@
+[submodule "kingfisher-collect"]
+	path = kingfisher-collect
+	url = git@github.com:open-contracting/kingfisher-collect.git

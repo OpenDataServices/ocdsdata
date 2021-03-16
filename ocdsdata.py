@@ -215,7 +215,6 @@ def scrape(name, id, run_id):
                         error_data,
                     ]
                 )
-                print([item["url"], item["data_type"], item["file_name"]])
             except Exception:
                 traceback.print_exc()
                 raise

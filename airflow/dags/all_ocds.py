@@ -37,7 +37,7 @@ def run_ocdsdata(command_str, dag_id, run_number=None, run_id=None):
     if command_str == "scrape":
         command(dag_id, f'{dag_id}_{run_number}', f'{run_id}')
     else:
-        command(dag_id)
+        command(f'{dag_id}_{run_number}')
 
     return True
 

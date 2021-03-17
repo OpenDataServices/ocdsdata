@@ -56,25 +56,25 @@ def create_dag(dag_id):
         base_tables = PythonOperator(
             python_callable=run_ocdsdata,
             task_id="create_base_tables",
-            op_args=["create_base_tables", dag_id],
+            op_args=["create_base_tables", dag_id, "{{dag_run.id}}"],
         )
 
         compile_release = PythonOperator(
             python_callable=run_ocdsdata,
             task_id="compile_releases",
-            op_args=["compile_releases", dag_id],
+            op_args=["compile_releases", dag_id, "{{dag_run.id}}"],
         )
 
         release_objects = PythonOperator(
             python_callable=run_ocdsdata,
             task_id="release_objects",
-            op_args=["release_objects", dag_id],
+            op_args=["release_objects", dag_id, "{{dag_run.id}}"],
         )
 
         schema_analysis = PythonOperator(
             python_callable=run_ocdsdata,
             task_id="schema_analysis",
-            op_args=["schema_analysis", dag_id],
+            op_args=["schema_analysis", dag_id, "{{dag_run.id}}"],
         )
 
         scrape >> base_tables >> compile_release >> release_objects >> schema_analysis

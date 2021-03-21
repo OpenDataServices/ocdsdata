@@ -4,3 +4,7 @@ orjson
 sqlalchemy
 psycopg2-binary
 codetiming
+openpyxl
+boto3
+fastavro
+google-cloud-bigquery

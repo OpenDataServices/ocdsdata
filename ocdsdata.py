@@ -17,6 +17,7 @@ import subprocess
 import gzip
 
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from google.cloud.bigquery.dataset import AccessEntry
 import openpyxl
 import orjson
 from pathlib import Path
@@ -956,7 +957,15 @@ def export_bigquery(schema, name, date):
         client.delete_dataset(dataset_id, delete_contents=True, not_found_ok=True)
         dataset = bigquery.Dataset(dataset_id)
         dataset.location = "EU"
+
+
         dataset = client.create_dataset(dataset, timeout=30)
+
+        access_entries = list(dataset.access_entries)
+        access_entries.append(AccessEntry('READER', 'specialGroup', 'allAuthenticatedUsers'))
+        dataset.access_entries=access_entries
+
+        dataset = client.update_dataset(dataset, ["access_entries"])
 
         result = connection.execute("select object_type, object_details from _object_details order by id")
         for object_type, object_details in list(result):

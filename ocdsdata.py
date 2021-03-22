@@ -211,6 +211,7 @@ def scrape(name, schema):
 
                 if isinstance(data, bytes):
                     data = data.decode(item["encoding"])
+                data = data.replace(r'\u0000', '')
 
                 count_data_types.update([item["data_type"]])
 
@@ -343,6 +344,13 @@ def create_base_tables(schema):
     """
 
     create_table("_compiled_releases", schema, compiled_releases_sql)
+
+    result = engine.execute(f"select count(*) from _compiled_releases").first()
+
+    print(f"{result['count']} compiled releases")
+    if result.count == 0:
+        print("No compiled releases!")
+        sys.exit(1)
 
 
 @cli.command("compile-releases")

@@ -53,7 +53,7 @@ def create_dag(dag_id):
 
     day_of_week = int(hashlib.md5(dag_id.encode()).hexdigest(), 16) % 7
 
-    dag = DAG(dag_id, start_date=days_ago(0), catchup=False, schedule_interval=f"0 0 * * {day_of_week}")
+    dag = DAG(dag_id, start_date=days_ago(8), catchup=False, schedule_interval=f"0 0 * * {day_of_week}")
 
     schema = f"process_{dag_id}"
 

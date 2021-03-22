@@ -158,6 +158,7 @@ def _scrape(name, schema):
 
 def scrape(name, schema):
     data_dir = this_path / "data" / schema
+    shutil.rmtree(data_dir, ignore_errors=True)
     data_dir.mkdir(parents=True, exist_ok=True)
     csv_file_path = data_dir / "all.csv"
 
@@ -185,6 +186,9 @@ def scrape(name, schema):
 
         def save_to_csv(item, spider):
             if "error" in item:
+                print(item)
+                return
+            if "data" not in item:
                 print(item)
                 return
             try:
@@ -512,7 +516,12 @@ def create_rows(result):
                 if award:
                     object["_link_award"] = award["_link"]
                     object["_award"] = {key: value for key, value in award.items() if not key.startswith("_")}
-        row["object"] = orjson.dumps(dict(flatten_object(object))).decode()
+        try:
+            row["object"] = orjson.dumps(dict(flatten_object(object))).decode()
+        except TypeError:
+            #orjson more strict about ints
+            row["object"] = json.dumps(dict(flatten_object(object)))
+
         row["parent_keys"] = orjson.dumps(row["parent_keys"]).decode()
 
     return [list(row.values()) for row in rows]

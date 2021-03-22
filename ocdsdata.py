@@ -14,6 +14,7 @@ import sys
 import zipfile
 import boto3
 import subprocess
+import gzip
 
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 import openpyxl
@@ -179,7 +180,7 @@ def scrape(name, schema):
     settings.pop("FILES_STORE")
     settings["LOG_FILE"] = str(data_dir / "all.log")
 
-    with open(str(csv_file_path), "w+", newline="") as csv_file:
+    with gzip.open(str(csv_file_path), "wt", newline="") as csv_file:
 
         csv_writer = csv.writer(csv_file)
 
@@ -250,7 +251,7 @@ def scrape(name, schema):
         with open(filename) as file:
             return "".join(deque(file, n))
 
-    with engine.begin() as connection, open(str(csv_file_path)) as f:
+    with engine.begin() as connection, gzip.open(str(csv_file_path), 'rt') as f:
         connection.execute(
             sa.text(f"insert into _job_info values (:name, :info, :logs)"),
             name=name,
@@ -377,7 +378,7 @@ def compile_releases(schema):
         )
 
         print("Making CSV file")
-        with open(str(csv_file_path), "w+", newline="") as csv_file, Timer():
+        with gzip.open(str(csv_file_path), "wt", newline="") as csv_file, Timer():
             csv_writer = csv.writer(csv_file)
             for num, result in enumerate(results):
                 try:
@@ -389,7 +390,7 @@ def compile_releases(schema):
                 csv_writer.writerow([result.compiled_release_id, json.dumps(compiled_release), error])
 
         print("Importing file")
-        with engine.begin() as connection, Timer(), open(str(csv_file_path)) as f:
+        with engine.begin() as connection, Timer(), gzip.open(str(csv_file_path), "rt") as f:
             dbapi_conn = connection.connection
             copy_sql = "COPY _tmp_compiled_releases FROM STDIN WITH CSV"
             cur = dbapi_conn.cursor()
@@ -563,13 +564,13 @@ def release_objects(schema):
         paths_csv_file = tmpdirname + "/paths.csv"
 
         print("Making CSV file")
-        with open(paths_csv_file, "w+", newline="") as csv_file, Timer():
+        with gzip.open(paths_csv_file, "wt", newline="") as csv_file, Timer():
             csv_writer = csv.writer(csv_file)
             for result in results:
                 csv_writer.writerows(create_rows(result))
 
         print("Uploading Data")
-        with engine.begin() as connection, open(paths_csv_file) as f, Timer():
+        with engine.begin() as connection, gzip.open(paths_csv_file, "rt") as f, Timer():
             dbapi_conn = connection.connection
             copy_sql = f"COPY {schema}._release_objects FROM STDIN WITH CSV"
             cur = dbapi_conn.cursor()

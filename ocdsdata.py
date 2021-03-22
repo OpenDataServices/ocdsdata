@@ -7,7 +7,7 @@ import traceback
 import json
 from jsonref import JsonRef
 import csv
-from collections import Counter
+from collections import Counter, deque
 import shutil
 from ocdsextensionregistry import ProfileBuilder
 import sys
@@ -165,7 +165,9 @@ def scrape(name, schema):
     engine = get_engine(schema)
     with engine.begin() as connection:
         connection.execute(
-            f"""create table _scrape_data(name TEXT, url TEXT, data_type TEXT, file_name TEXT,
+            f"""drop table if exists _scrape_data;
+                drop table if exists _job_info;
+                create table _scrape_data(name TEXT, url TEXT, data_type TEXT, file_name TEXT,
                                                  valid BOOLEAN, data JSONB, error_data TEXT);
                 create table _job_info(name TEXT, info JSONB, logs TEXT);
             """
@@ -242,14 +244,18 @@ def scrape(name, schema):
     info_data = json.dumps(info, default=str)
     info_file.write_text(info_data)
 
-    log_text = (data_dir / "all.log").read_text()
+    log_file = data_dir / "all.log"
+
+    def tail(filename, n=10000):
+        with open(filename) as file:
+            return "".join(deque(file, n))
 
     with engine.begin() as connection, open(str(csv_file_path)) as f:
         connection.execute(
             sa.text(f"insert into _job_info values (:name, :info, :logs)"),
             name=name,
             info=info_data,
-            logs=log_text,
+            logs=tail(log_file),
         )
 
         dbapi_conn = connection.connection
@@ -519,7 +525,7 @@ def create_rows(result):
         try:
             row["object"] = orjson.dumps(dict(flatten_object(object))).decode()
         except TypeError:
-            #orjson more strict about ints
+            # orjson more strict about ints
             row["object"] = json.dumps(dict(flatten_object(object)))
 
         row["parent_keys"] = orjson.dumps(row["parent_keys"]).decode()

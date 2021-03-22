@@ -174,10 +174,9 @@ def scrape(name, schema):
         )
         time_now = str(datetime.datetime.utcnow())
 
-    os.environ["FILES_STORE"] = str(data_dir.absolute())
-
     os.chdir(collect_path)
     settings = get_project_settings()
+    settings.pop("FILES_STORE")
     settings["LOG_FILE"] = str(data_dir / "all.log")
 
     with open(str(csv_file_path), "w+", newline="") as csv_file:

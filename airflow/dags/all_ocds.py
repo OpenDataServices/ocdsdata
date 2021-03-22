@@ -136,12 +136,18 @@ def create_dag(dag_id):
             op_args=["export_pgdump", dag_id, dag_id],
         )
 
+        drop_schema = PythonOperator(
+            python_callable=run_ocdsdata,
+            task_id="drop_schema",
+            op_args=["drop_schema", dag_id, dag_id],
+        )
+
         create_schema >> scrape >> base_tables >> compile_release >> release_objects >> schema_analysis >> postgres_tables >> [
             export_csv,
             export_xlsx,
             export_bigquery,
             export_stats,
-        ] >> rename_schema >> export_pgdump
+        ] >> rename_schema >> export_pgdump >> drop_schema
 
     return dag
 

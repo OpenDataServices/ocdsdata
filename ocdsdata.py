@@ -103,7 +103,7 @@ def export_scrapers():
 def run_all(name, schema):
     create_schema(schema)
     scrape(name, schema)
-    create_base_tables(schema)
+    create_base_tables(schema, drop_scrape=False)
     compile_releases(schema)
     release_objects(schema)
     schema_analysis(schema)
@@ -281,7 +281,7 @@ def _create_base_tables(schema):
     create_base_tables(schema)
 
 
-def create_base_tables(schema):
+def create_base_tables(schema, drop_scrape=True):
     engine = get_engine(schema)
 
     package_data_sql = """
@@ -345,6 +345,9 @@ def create_base_tables(schema):
     """
 
     create_table("_compiled_releases", schema, compiled_releases_sql)
+
+    if drop_scrape:
+        engine.execute('drop table if exists _scrape_data')
 
     result = engine.execute(f"select count(*) from _compiled_releases").first()
 

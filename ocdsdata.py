@@ -564,14 +564,15 @@ def release_objects(schema):
     results = engine.execute("select compiled_release_id, compiled_release from _compiled_releases")
 
     with tempfile.TemporaryDirectory() as tmpdirname:
-        results = engine.execute("select compiled_release_id, compiled_release from _compiled_releases")
-        paths_csv_file = tmpdirname + "/paths.csv"
+        with engine.begin() as connection, Timer():
+            results = connection.execute("select compiled_release_id, compiled_release from _compiled_releases")
+            paths_csv_file = tmpdirname + "/paths.csv"
 
-        print("Making CSV file")
-        with gzip.open(paths_csv_file, "wt", newline="") as csv_file, Timer():
-            csv_writer = csv.writer(csv_file)
-            for result in results:
-                csv_writer.writerows(create_rows(result))
+            print("Making CSV file")
+            with gzip.open(paths_csv_file, "wt", newline="") as csv_file, Timer():
+                csv_writer = csv.writer(csv_file)
+                for result in results:
+                    csv_writer.writerows(create_rows(result))
 
         print("Uploading Data")
         with engine.begin() as connection, gzip.open(paths_csv_file, "rt") as f, Timer():

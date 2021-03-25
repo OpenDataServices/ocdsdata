@@ -640,17 +640,28 @@ def schema_analysis(schema):
     standard_schema = builder.patched_release_schema()
 
     create_table(
-        "_object_type_fields",
+        "_object_type_aggregate",
         schema,
         """select
               object_type,
               each.key,
+              jsonb_typeof(value) value_type,
+              count(*) from _release_objects ro, jsonb_each(object) each group by 1,2,3;
+        """,
+    )
+
+    create_table(
+        "_object_type_fields",
+        schema,
+        """select
+              object_type,
+              key,
               case when
-                  count(distinct jsonb_typeof(value)) > 1
+                  count(*) > 1
               then 'string'
-              else max(jsonb_typeof(value)) end
-              value_type,
-              count(*) from _release_objects ro, jsonb_each(object) each group by 1,2;
+              else max(value_type) end value_type,
+              sum("count") as "count" 
+              from _object_type_aggregate group by 1,2;
         """,
     )
 

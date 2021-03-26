@@ -107,7 +107,7 @@ def run_all(name, schema):
     compile_releases(schema)
     release_objects(schema)
     schema_analysis(schema)
-    postgres_tables(schema)
+    postgres_tables(schema, drop_release_objects=True)
 
 
 @cli.command("create-schema")
@@ -749,6 +749,8 @@ def create_field_sql(object_details):
             field = f'"{name}" numeric'
         elif type == "array":
             field = f'"{name}" JSONB'
+        elif type == "boolean":
+            field = f'"{name}" boolean'
         else:
             field = f'"{name}" TEXT'
         fields.append(f'"{name}"')
@@ -763,7 +765,7 @@ def _postgres_tables(schema):
     postgres_tables(schema)
 
 
-def postgres_tables(schema):
+def postgres_tables(schema, drop_release_objects=True):
     with get_engine(schema).begin() as connection:
         result = list(connection.execute("select object_type, object_details from _object_details order by id"))
 
@@ -775,6 +777,11 @@ def postgres_tables(schema):
            WHERE object_type = :object_type
         """
         create_table(object_type, schema, table_sql, object_type=object_type)
+
+    if drop_release_objects:
+        with get_engine(schema).begin() as connection:
+            connection.execute('drop table if exists _release_objects')
+
 
 
 def generate_object_type_rows(object_detials_results):
@@ -986,7 +993,7 @@ def export_bigquery(schema, name, date):
         for object_type, object_details in list(result):
             print(f"loading {object_type}")
             result = connection.execute(
-                sa.text("select object from _release_objects where object_type = :object_type"), object_type=object_type
+                sa.text(f'select to_jsonb("{object_type.lower()}") AS object from "{object_type.lower()}"')
             )
             schema = create_avro_schema(object_type, object_details)
 

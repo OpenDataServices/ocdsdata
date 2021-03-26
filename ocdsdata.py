@@ -991,7 +991,7 @@ def export_bigquery(schema, name, date):
             schema = create_avro_schema(object_type, object_details)
 
             with open(f"{tmpdirname}/{object_type}.avro", "wb") as out:
-                writer(out, parse_schema(schema), generate_avro_records(result, object_details), validator=True)
+                writer(out, parse_schema(schema), generate_avro_records(result, object_details), validator=True, codec='deflate')
 
             table_id = f"{client.project}.{name}.{object_type}"
 

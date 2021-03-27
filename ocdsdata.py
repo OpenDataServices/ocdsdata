@@ -450,7 +450,7 @@ def traverse_object(obj, emit_object, full_path=tuple(), no_index_path=tuple()):
             obj.pop(key)
         elif isinstance(value, list):
             if not all(isinstance(item, str) for item in value):
-                object[key] = json.dumps(value)
+                obj[key] = json.dumps(value)
         elif isinstance(value, dict):
             if no_index_path + (key,) in EMIT_OBJECT_PATHS:
                 yield from traverse_object(value, True, full_path + (key,), no_index_path + (key,))

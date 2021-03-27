@@ -1,8 +1,13 @@
+from pathlib import Path
 from airflow.utils.dates import days_ago
 from airflow import DAG
 
 from airflow.operators.python import PythonOperator
 
+dir_path = Path(__file__).parent.resolve()
+
+ocdsdata_root = dir_path.parent.parent
+ocdsdata_ve = ocdsdata_root / ".ve"
 
 
 def run_collect_stats():

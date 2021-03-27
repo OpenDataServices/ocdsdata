@@ -156,3 +156,4 @@ scrapers = json.loads(subprocess.run([ocdsdata_python, cli_path, "export-scraper
 
 for scraper in scrapers:
     globals()[scraper] = create_dag(scraper)
+

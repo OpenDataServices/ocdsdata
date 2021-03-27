@@ -1,5 +1,6 @@
 import click
 import os
+import re
 import tempfile
 import functools
 import datetime
@@ -89,12 +90,16 @@ def refresh_db():
     click.echo("refreshed database")
 
 
-@cli.command()
-def export_scrapers():
+def scraper_list():
     os.chdir(collect_path)
     settings = get_project_settings()
     sl = SpiderLoader.from_settings(settings)
-    click.echo(json.dumps(sl.list()))
+    return sl.list()
+
+
+@cli.command()
+def export_scrapers():
+    click.echo(json.dumps(scraper_list()))
 
 
 @cli.command()
@@ -212,7 +217,7 @@ def scrape(name, schema):
 
                 if isinstance(data, bytes):
                     data = data.decode(item["encoding"])
-                data = data.replace(r'\u0000', '')
+                data = data.replace(r"\u0000", "")
 
                 count_data_types.update([item["data_type"]])
 
@@ -252,7 +257,7 @@ def scrape(name, schema):
         with open(filename) as file:
             return "".join(deque(file, n))
 
-    with engine.begin() as connection, gzip.open(str(csv_file_path), 'rt') as f:
+    with engine.begin() as connection, gzip.open(str(csv_file_path), "rt") as f:
         connection.execute(
             sa.text(f"insert into _job_info values (:name, :info, :logs)"),
             name=name,
@@ -347,7 +352,7 @@ def create_base_tables(schema, drop_scrape=True):
     create_table("_compiled_releases", schema, compiled_releases_sql)
 
     if drop_scrape:
-        engine.execute('drop table if exists _scrape_data')
+        engine.execute("drop table if exists _scrape_data")
 
     result = engine.execute(f"select count(*) from _compiled_releases").first()
 
@@ -780,8 +785,7 @@ def postgres_tables(schema, drop_release_objects=True):
 
     if drop_release_objects:
         with get_engine(schema).begin() as connection:
-            connection.execute('drop table if exists _release_objects')
-
+            connection.execute("drop table if exists _release_objects")
 
 
 def generate_object_type_rows(object_detials_results):
@@ -828,7 +832,7 @@ def export_csv(schema, name, date):
         if bucket:
             object = bucket.Object(f"{name}/ocdadata_{name}_csv.zip")
             object.upload_file(f"{tmpdirname}/output.zip", ExtraArgs={"ACL": "public-read"})
-            metadata_object = bucket.Object(f"{name}/metatdata/csv_upload_dates/{date}")
+            metadata_object = bucket.Object(f"{name}/metadata/csv_upload_dates/{date}")
             metadata_object.put(ACL="public-read", Body=b"")
 
 
@@ -920,7 +924,7 @@ def export_xlsx(schema, name, date):
         if bucket:
             object = bucket.Object(f"{name}/ocdsdata_{name}.xlsx")
             object.upload_file(f"{tmpdirname}/data.xlsx", ExtraArgs={"ACL": "public-read"})
-            metadata_object = bucket.Object(f"{name}/metatdata/xlsx_upload_dates/{date}")
+            metadata_object = bucket.Object(f"{name}/metadata/xlsx_upload_dates/{date}")
             metadata_object.put(ACL="public-read", Body=b"")
 
 
@@ -932,10 +936,17 @@ def create_avro_schema(object_type, object_details):
         if type == "number":
             type = "double"
 
-        field = {"name": item["name"], "type": [type, "null"], "doc": item.get("description")}
+        field = {
+            "name": item["name"],
+            "type": [type, "null"],
+            "doc": item.get("description"),
+        }
 
         if type == "array":
-            field["type"] = [{"type": "array", "items": "string", "default": []}, "null"]
+            field["type"] = [
+                {"type": "array", "items": "string", "default": []},
+                "null",
+            ]
 
         fields.append(field)
 
@@ -980,12 +991,11 @@ def export_bigquery(schema, name, date):
         dataset = bigquery.Dataset(dataset_id)
         dataset.location = "EU"
 
-
         dataset = client.create_dataset(dataset, timeout=30)
 
         access_entries = list(dataset.access_entries)
-        access_entries.append(AccessEntry('READER', 'specialGroup', 'allAuthenticatedUsers'))
-        dataset.access_entries=access_entries
+        access_entries.append(AccessEntry("READER", "specialGroup", "allAuthenticatedUsers"))
+        dataset.access_entries = access_entries
 
         dataset = client.update_dataset(dataset, ["access_entries"])
 
@@ -998,7 +1008,13 @@ def export_bigquery(schema, name, date):
             schema = create_avro_schema(object_type, object_details)
 
             with open(f"{tmpdirname}/{object_type}.avro", "wb") as out:
-                writer(out, parse_schema(schema), generate_avro_records(result, object_details), validator=True, codec='deflate')
+                writer(
+                    out,
+                    parse_schema(schema),
+                    generate_avro_records(result, object_details),
+                    validator=True,
+                    codec="deflate",
+                )
 
             table_id = f"{client.project}.{name}.{object_type}"
 
@@ -1011,7 +1027,7 @@ def export_bigquery(schema, name, date):
             if bucket:
                 object = bucket.Object(f"{name}/avro/ocdsdata_{name}_{object_type}.avro")
                 object.upload_file(f"{tmpdirname}/{object_type}.avro", ExtraArgs={"ACL": "public-read"})
-                metadata_object = bucket.Object(f"{name}/metatdata/avro_upload_dates/{date}")
+                metadata_object = bucket.Object(f"{name}/metadata/avro_upload_dates/{date}")
                 metadata_object.put(ACL="public-read", Body=b"")
 
 
@@ -1029,12 +1045,17 @@ def export_stats(schema, name, date):
     with get_engine(schema).begin() as connection:
         result = connection.execute("select to_json(_job_info) AS job_info from _job_info")
         job_info = orjson.dumps(result.first().job_info)
-        job_info_object = bucket.Object(f"{name}/metatdata/job_info/{date}.json")
+        job_info_object = bucket.Object(f"{name}/metadata/job_info/{date}.json")
         job_info_object.put(ACL="public-read", Body=job_info)
 
         result = connection.execute("select to_json(_object_type_fields) AS data from _object_type_fields")
         field_info = orjson.dumps([row.data for row in result])
-        field_info_object = bucket.Object(f"{name}/metatdata/field_info/{date}.json")
+        field_info_object = bucket.Object(f"{name}/metadata/field_info/{date}.json")
+        field_info_object.put(ACL="public-read", Body=field_info)
+
+        result = connection.execute("select to_json(_object_details) AS data from _object_details")
+        field_info = orjson.dumps([row.data for row in result])
+        field_info_object = bucket.Object(f"{name}/metadata/field_types/{date}.json")
         field_info_object.put(ACL="public-read", Body=field_info)
 
 
@@ -1066,8 +1087,78 @@ def export_pgdump(schema, name, date):
 
         pg_dump_object = bucket.Object(f"{name}/ocdsdata_{name}.pg_dump")
         pg_dump_object.upload_file(f"{tmpdirname}/dump.sql", ExtraArgs={"ACL": "public-read"})
-        metadata_object = bucket.Object(f"{name}/metatdata/pg_dump_upload_dates/{date}")
+        metadata_object = bucket.Object(f"{name}/metadata/pg_dump_upload_dates/{date}")
         metadata_object.put(ACL="public-read", Body=b"")
+
+
+@cli.command("collect-stats")
+def _collect_stats():
+    collect_stats()
+
+
+def collect_stats():
+
+    out = {}
+
+    for scraper in scraper_list():
+        out[scraper] = {
+            "csv": {},
+            "xlsx": {},
+            "pg_dump": {},
+            "avro": {"files": {}},
+            "field_info": {},
+            "field_types": {},
+            "table_stats": {},
+        }
+
+    bucket = get_s3_bucket()
+
+    bucket_url = f"{bucket.meta.client.meta.endpoint_url}/{bucket.name}"
+
+    for item in sorted(bucket.objects.all(), key=lambda x: x.key.split("/")[-1]):
+        item_url = f"{bucket_url}/{item.key}"
+        parts = item.key.split("/")
+        scraper = parts[0]
+        file_name = parts[-1]
+
+        if file_name.endswith("csv.zip"):
+            out[scraper]["csv"].update(file_name=file_name, url=item_url)
+        if file_name.endswith("pg_dump"):
+            out[scraper]["pg_dump"].update(file_name=file_name, url=item_url)
+        if file_name.endswith("xlsx"):
+            out[scraper]["xlsx"].update(file_name=file_name, url=item_url)
+        if file_name.endswith("avro"):
+            obj = re.sub(f"^ocdsdata_{scraper}_", "", file_name[:-5])
+            out[scraper]["avro"]["files"][obj] = item_url
+
+        if parts[1] not in ("metadata", "metatdata"):
+            continue
+
+        if "upload_dates" in parts[2]:
+            file_type = parts[2].replace("_upload_dates", "")
+            out[scraper][file_type]["latest_date"] = file_name
+
+        if "field_info" in parts[2]:
+            out[scraper]["field_info"]["latest"] = item_url
+            out[scraper]["field_info"]["latest_item"] = item
+            out[scraper]["field_info"][file_name[:-5]] = item_url
+            out[scraper]["field_info"]["latest_date"] = file_name[:-5]
+
+        if "field_types" in parts[2]:
+            out[scraper]["field_types"]["latest"] = item_url
+            out[scraper]["field_types"][file_name[:-5]] = item_url
+            out[scraper]["field_types"]["latest_date"] = file_name[:-5]
+
+    for scraper, data in out.items():
+        latest_item = data["field_info"].pop("latest_item", None)
+        if latest_item:
+            field_info_data = json.load(latest_item.get()["Body"])
+            for item in field_info_data:
+                if item["key"] == "_link":
+                    data["table_stats"][item["object_type"]] = item["count"]
+
+    stats_object = bucket.Object(f"metadata/stats.json")
+    stats_object.put(ACL="public-read", Body=orjson.dumps(out))
 
 
 if __name__ == "__main__":

@@ -927,6 +927,7 @@ def export_xlsx(schema, name, date):
             metadata_object = bucket.Object(f"{name}/metadata/xlsx_upload_dates/{date}")
             metadata_object.put(ACL="public-read", Body=b"")
 
+name_allowed_pattern = re.compile('[\W]+')
 
 def create_avro_schema(object_type, object_details):
     fields = []
@@ -937,7 +938,7 @@ def create_avro_schema(object_type, object_details):
             type = "double"
 
         field = {
-            "name": item["name"],
+            "name": name_allowed_pattern.sub('', item["name"]),
             "type": [type, "null"],
             "doc": item.get("description"),
         }
@@ -960,7 +961,7 @@ def generate_avro_records(result, object_details):
     for row in result:
         new_object = {}
         for key, value in row.object.items():
-            new_object[key] = str(value) if key in cast_to_string else value
+            new_object[name_allowed_pattern.sub('', key)] = str(value) if key in cast_to_string else value
         yield new_object
 
 
@@ -1106,6 +1107,7 @@ def collect_stats():
             "xlsx": {},
             "pg_dump": {},
             "avro": {"files": {}},
+            "big_query": {},
             "field_info": {},
             "field_types": {},
             "table_stats": {},
@@ -1130,6 +1132,7 @@ def collect_stats():
         if file_name.endswith("avro"):
             obj = re.sub(f"^ocdsdata_{scraper}_", "", file_name[:-5])
             out[scraper]["avro"]["files"][obj] = item_url
+            out[scraper]["big_query"].update(url=f'https://console.cloud.google.com/bigquery?project=ocdsdata&p=ocdsdata&d={scraper}&page=dataset')
 
         if parts[1] not in ("metadata", "metatdata"):
             continue

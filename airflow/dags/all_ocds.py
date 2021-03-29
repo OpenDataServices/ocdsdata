@@ -31,6 +31,7 @@ def run_ocdsdata(command_str, dag_id, schema, ds=None):
     sys.path.insert(0, str(ocdsdata_ve / f"lib/python{ver.major}.{ver.minor}/site-packages"))
     sys.path.insert(0, str(ocdsdata_root))
 
+    import datetime
     import ocdsdata
 
     command = getattr(ocdsdata, command_str)
@@ -42,7 +43,7 @@ def run_ocdsdata(command_str, dag_id, schema, ds=None):
     elif command_str == "rename_schema":
         command(schema, dag_id)
     elif command_str.startswith("export"):
-        command(schema, dag_id, ds)
+        command(schema, dag_id, str(datetime.datetime.utcnow())[:10])
     else:
         command(schema)
 

@@ -821,7 +821,7 @@ def export_csv(schema, name, date):
                     cur = dbapi_conn.cursor()
                     cur.copy_expert(copy_sql, out)
 
-                zip_file.write(f"{tmpdirname}/{object_type}.csv", arcname=f"{name}/{object_type}")
+                zip_file.write(f"{tmpdirname}/{object_type}.csv", arcname=f"{name}/{object_type}.csv")
 
             with open(f"{tmpdirname}/fields.csv", "w") as csv_file:
                 csv_writer = csv.writer(csv_file)

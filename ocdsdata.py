@@ -858,7 +858,7 @@ def generate_spreadsheet_rows(result, object_details):
         data = row.data
         line = []
         for field in object_details:
-            value = data[field["name"]]
+            value = data[field["name"]] or ''
             if isinstance(value, list):
                 value = ", ".join(value)
             if field["type"] == "string":

@@ -1111,6 +1111,7 @@ def collect_stats():
             "field_info": {},
             "field_types": {},
             "table_stats": {},
+            "job_info": {},
         }
 
     bucket = get_s3_bucket()
@@ -1152,13 +1153,25 @@ def collect_stats():
             out[scraper]["field_types"][file_name[:-5]] = item_url
             out[scraper]["field_types"]["latest_date"] = file_name[:-5]
 
+        if "job_info" in parts[2]:
+            out[scraper]["job_info"]["latest"] = item_url
+            out[scraper]["job_info"]["latest_item"] = item
+            out[scraper]["job_info"][file_name[:-5]] = item_url
+            out[scraper]["job_info"]["latest_date"] = file_name[:-5]
+
     for scraper, data in out.items():
-        latest_item = data["field_info"].pop("latest_item", None)
-        if latest_item:
-            field_info_data = json.load(latest_item.get()["Body"])
+        latest_field_info_item = data["field_info"].pop("latest_item", None)
+        if latest_field_info_item:
+            field_info_data = json.load(latest_field_info_item.get()["Body"])
             for item in field_info_data:
                 if item["key"] == "_link":
                     data["table_stats"][item["object_type"]] = item["count"]
+
+        latest_job_info_item = data["job_info"].pop("latest_item", None)
+        if latest_job_info_item:
+            job_info_data = json.load(latest_job_info_item.get()["Body"])
+            data["job_info"]['latest_info'] = job_info_data['info']
+
 
     stats_object = bucket.Object(f"metadata/stats.json")
     stats_object.put(ACL="public-read", Body=orjson.dumps(out))

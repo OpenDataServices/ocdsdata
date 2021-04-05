@@ -16,6 +16,10 @@ import zipfile
 import boto3
 import subprocess
 import gzip
+from google.oauth2 import service_account
+import base64
+import orjson
+import os
 
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from google.cloud.bigquery.dataset import AccessEntry
@@ -29,6 +33,11 @@ from scrapy.crawler import CrawlerProcess
 from scrapy import signals
 from codetiming import Timer
 import ocdsmerge
+from fastavro import writer, parse_schema
+from google.cloud import bigquery
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 
 this_path = Path(__file__).parent.absolute()
@@ -974,11 +983,6 @@ def _export_bigquery(schema, name, date):
 
 
 def export_bigquery(schema, name, date):
-    from fastavro import writer, parse_schema
-    from google.cloud import bigquery
-
-    from google.oauth2 import service_account
-    import base64
 
     json_acct_info = orjson.loads(base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"]))
 
@@ -1090,6 +1094,58 @@ def export_pgdump(schema, name, date):
         pg_dump_object.upload_file(f"{tmpdirname}/dump.sql", ExtraArgs={"ACL": "public-read"})
         metadata_object = bucket.Object(f"{name}/metadata/pg_dump_upload_dates/{date}")
         metadata_object.put(ACL="public-read", Body=b"")
+        make_notebook(name)
+
+
+@cli.command("make-notebook")
+@click.argument("schema")
+def _make_notebook(schema):
+    make_notebook(schema)
+
+def make_notebook(schema):
+    bucket = get_s3_bucket()
+
+    with tempfile.TemporaryDirectory() as tmpdirname, open(this_path / 'notebook/template.ipynb') as template:
+        template_text = template.read()
+        template_text = template_text.replace('zambia', schema)
+        template_text = template_text.replace('Zambia', schema.replace('_',' ').capitalize())
+        with open(tmpdirname + '/notebook.ipynb', 'w+') as output:
+            output.write(template_text)
+
+        json_acct_info = orjson.loads(base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"]))
+        credentials = service_account.Credentials.from_service_account_info(json_acct_info)
+
+        service = build('drive', 'v3', credentials=credentials)
+
+        response = service.files().list(q=f"mimeType='application/vnd.google.colaboratory' and name = '{schema}.ipynb'",
+                                        spaces='drive', pageSize=1000).execute()
+
+        for file in response.get('files', []):
+            service.files().delete(fileId=file['id']).execute()
+
+        folder_id = '1wNkeGqdDP3wQR4xe8yyFreOez9U47Vz8'
+        file_metadata = {
+            'name': f'{schema}.ipynb',
+            'parents': [folder_id]
+        }
+        media = MediaFileUpload(tmpdirname + '/notebook.ipynb',
+                                mimetype='application/vnd.google.colaboratory')
+        file = service.files().create(body=file_metadata,
+                                      media_body=media,
+                                      fields='id').execute()
+
+        pg_dump_object = bucket.Object(f"{schema}/ocdsdata_{schema}_notebook.json")
+        pg_dump_object.put(ACL="public-read", Body=orjson.dumps(file))
+
+
+@cli.command("make-notebooks")
+def _make_notebooks():
+    bucket = get_s3_bucket()
+    stats_object = bucket.Object(f"metadata/stats.json")
+    stats = json.load(stats_object.get()["Body"])
+    for schema, info in stats.items():
+        if info.get('pg_dump'):
+            make_notebook(schema)
 
 
 @cli.command("collect-stats")
@@ -1108,6 +1164,7 @@ def collect_stats():
             "pg_dump": {},
             "avro": {"files": {}},
             "big_query": {},
+            "notebookIdFile": '',
             "field_info": {},
             "field_types": {},
             "table_stats": {},
@@ -1134,6 +1191,8 @@ def collect_stats():
             obj = re.sub(f"^ocdsdata_{scraper}_", "", file_name[:-5])
             out[scraper]["avro"]["files"][obj] = item_url
             out[scraper]["big_query"].update(url=f'https://console.cloud.google.com/bigquery?project=ocdsdata&p=ocdsdata&d={scraper}&page=dataset')
+        if file_name.endswith("_notebook.json"):
+            out[scraper]['notebookIdFile'] = item_url
 
         if parts[1] not in ("metadata", "metatdata"):
             continue

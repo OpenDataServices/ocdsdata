@@ -1179,6 +1179,10 @@ def collect_stats():
         item_url = f"{bucket_url}/{item.key}"
         parts = item.key.split("/")
         scraper = parts[0]
+
+        if scraper not in out:
+            continue
+
         file_name = parts[-1]
 
         if file_name.endswith("csv.zip"):

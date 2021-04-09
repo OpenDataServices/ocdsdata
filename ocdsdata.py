@@ -13,6 +13,7 @@ import traceback
 import zipfile
 from collections import Counter, deque
 from pathlib import Path
+from textwrap import dedent
 
 import boto3
 import click
@@ -1198,6 +1199,61 @@ def export_bigquery(schema, name, date):
                 metadata_object.put(ACL="public-read", Body=b"")
 
 
+@cli.command("export-sqlite")
+@click.argument("schema")
+@click.argument("name")
+@click.argument("date")
+def _export_sqlite(schema, name, date):
+    export_sqlite(schema, name, date)
+
+
+def export_sqlite(schema, name, date):
+    with tempfile.TemporaryDirectory() as tmpdirname, get_engine(
+        schema
+    ).begin() as connection:
+        result = list(
+            connection.execute(
+                "SELECT object_type, object_details FROM _object_details order by id"
+            )
+        )
+        for object_type, object_details in result:
+            print(f'importing table {object_type}')
+            with open(f"{tmpdirname}/{object_type}.csv", "wb") as out:
+                dbapi_conn = connection.connection
+                copy_sql = f'COPY "{object_type.lower()}" TO STDOUT WITH CSV'
+                cur = dbapi_conn.cursor()
+                cur.copy_expert(copy_sql, out)
+
+            _, field_def = create_field_sql(object_details)
+            import_sql = f'''
+            .mode csv
+            CREATE TABLE "{object_type}" ({field_def}) ;
+            .import {tmpdirname}/{object_type}.csv "{object_type}" '''
+
+            subprocess.run(['sqlite3', f'{tmpdirname}/{name}.sqlite'], input=dedent(import_sql), text=True, check=True)
+
+            os.remove(f"{tmpdirname}/{object_type}.csv")
+
+        with open(f"{tmpdirname}/fields.csv", "w") as csv_file:
+            csv_writer = csv.writer(csv_file)
+            csv_writer.writerows(generate_object_type_rows(result))
+
+        import_sql = f'''
+            .mode csv
+            .import {tmpdirname}/fields.csv "fields" '''
+
+        subprocess.run(['sqlite3', f'{tmpdirname}/{name}.sqlite'], input=dedent(import_sql), text=True, check=True)
+
+        bucket = get_s3_bucket()
+        if bucket:
+            object = bucket.Object(f"{name}/ocdadata_{name}.sqlite")
+            object.upload_file(
+                f'{tmpdirname}/{name}.sqlite', ExtraArgs={"ACL": "public-read"}
+            )
+            metadata_object = bucket.Object(f"{name}/metadata/sqlite_upload_dates/{date}")
+            metadata_object.put(ACL="public-read", Body=b"")
+
+
 @cli.command("export-stats")
 @click.argument("schema")
 @click.argument("name")
@@ -1348,6 +1404,7 @@ def collect_stats():
         out[scraper] = {
             "csv": {},
             "xlsx": {},
+            "sqlite": {},
             "pg_dump": {},
             "avro": {"files": {}},
             "big_query": {},
@@ -1374,6 +1431,8 @@ def collect_stats():
 
         if file_name.endswith("csv.zip"):
             out[scraper]["csv"].update(file_name=file_name, url=item_url)
+        if file_name.endswith(".sqlite"):
+            out[scraper]["sqlite"].update(file_name=file_name, url=item_url)
         if file_name.endswith("pg_dump"):
             out[scraper]["pg_dump"].update(file_name=file_name, url=item_url)
         if file_name.endswith("xlsx"):

@@ -119,6 +119,12 @@ def create_dag(dag_id):
             op_args=["export_bigquery", dag_id, schema],
         )
 
+        export_sqlite = PythonOperator(
+            python_callable=run_ocdsdata,
+            task_id="export_sqlite",
+            op_args=["export_sqlite", dag_id, schema],
+        )
+
         export_stats = PythonOperator(
             python_callable=run_ocdsdata,
             task_id="export_stats",
@@ -147,6 +153,7 @@ def create_dag(dag_id):
             export_csv,
             export_xlsx,
             export_bigquery,
+            export_sqlite,
             export_stats,
         ] >> rename_schema >> export_pgdump >> drop_schema
 

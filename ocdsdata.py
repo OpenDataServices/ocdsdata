@@ -186,6 +186,7 @@ def export_all(name, schema, date):
     """
     export_csv(schema, name, date)
     export_xlsx(schema, name, date)
+    export_sqlite(schema, name, date)
     export_bigquery(schema, name, date)
     export_pgdump(schema, name, date)
 

@@ -1,51 +1,72 @@
-import click
+import base64
+import csv
+import functools
+import gzip
+import json
 import os
 import re
-import tempfile
-import functools
-import datetime
-import traceback
-import json
-from jsonref import JsonRef
-import csv
-from collections import Counter, deque
 import shutil
-from ocdsextensionregistry import ProfileBuilder
-import sys
-import zipfile
-import boto3
 import subprocess
-import gzip
-from google.oauth2 import service_account
-import base64
-import orjson
-import os
+import sys
+import tempfile
+import traceback
+import zipfile
+from collections import Counter, deque
+from pathlib import Path
 
-from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-from google.cloud.bigquery.dataset import AccessEntry
+import boto3
+import click
+import ocdsmerge
 import openpyxl
 import orjson
-from pathlib import Path
 import sqlalchemy as sa
-from scrapy.utils.project import get_project_settings
-from scrapy.spiderloader import SpiderLoader
-from scrapy.crawler import CrawlerProcess
-from scrapy import signals
 from codetiming import Timer
-import ocdsmerge
-from fastavro import writer, parse_schema
+from fastavro import parse_schema, writer
 from google.cloud import bigquery
+from google.cloud.bigquery.dataset import AccessEntry
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from jsonref import JsonRef
+from ocdsextensionregistry import ProfileBuilder
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from scrapy import signals
+from scrapy.crawler import CrawlerProcess
+from scrapy.spiderloader import SpiderLoader
+from scrapy.utils.project import get_project_settings
 
 
 this_path = Path(__file__).parent.absolute()
 collect_path = str((this_path / "kingfisher-collect").absolute())
 
 
+def _first_doc_line(function):
+    return function.__doc__.split('\n')[0]
+
+
 @functools.lru_cache(None)
 def get_engine(schema=None, db_uri=None, pool_size=1):
+    """ Get SQLAlchemy engine
+
+    Will cache engine if all arguments are the same so not expensive to call multiple times.
+
+
+    Parameters
+    ----------
+    schema : string, optional
+        Postgres schema that all queries will use. Defaults to using public schema.
+    db_url : string, optional
+        SQLAlchemy database connection string. Will defailt to using `DATABASE_URL` environment variable.
+    pool_size : int
+       SQLAlchemy connection pool size
+
+
+    Returns
+    -------
+    sqlalchemy.Engine
+        SQLAlchemy Engine object set up to query specified schema (or public schema)
+        """
+
     if not db_uri:
         db_uri = os.environ["DATABASE_URL"]
 
@@ -57,6 +78,23 @@ def get_engine(schema=None, db_uri=None, pool_size=1):
 
 
 def get_s3_bucket():
+    """ Get S3 bucket object
+
+    Needs environment variables:
+
+    `AWS_ACCESS_KEY_ID`,
+    `AWS_S3_ENDPOINT_URL`,
+    `AWS_SECRET_ACCESS_KEY`,
+    `AWS_DEFAULT_REGION`,
+    `AWS_S3_ENDPOINT_URL`
+
+    Returns
+    -------
+    s3.Bucket
+        s3.Bucket object to interact with S3
+
+    """
+
     session = boto3.session.Session()
     if not os.environ.get("AWS_ACCESS_KEY_ID"):
         return
@@ -67,6 +105,19 @@ def get_s3_bucket():
 
 
 def create_table(table, schema, sql, **params):
+    """ Create table under given schema by supplying SQL
+
+    Parameters
+    ----------
+    table : string
+        Postgres schema to use.
+    schema : string
+        Postgres schema to use.
+    sql : string
+    SQL to create table can be parametarized by SQLAlchemy parms that start with a `:` e.g `:param`.
+    params : key (string), values (any)
+        keys are params found in sql and values are the values to be replaced.
+    """
     print(f"creating table {table}")
     t = Timer()
     t.start()
@@ -74,18 +125,14 @@ def create_table(table, schema, sql, **params):
     with engine.connect() as con:
         con.execute(
             sa.text(
-                f"""drop table if exists {table};
-                        create table {table}
-                        AS
-                        {sql};"""
+                f"""DROP TABLE IF EXISTS {table};
+                    CREATE TABLE {table}
+                    AS
+                    {sql};"""
             ),
             **params,
         )
     t.stop()
-
-
-def execute(connection, sql, **params):
-    connection.execute(sa.text(sql), **params)
 
 
 @click.group()
@@ -93,28 +140,32 @@ def cli():
     pass
 
 
-@cli.command()
-def refresh_db():
-    refresh_database()
-    click.echo("refreshed database")
-
-
 def scraper_list():
+    """List of scrapers from kingfisher collect.
+
+    Returns
+    -------
+    list of str
+        List of scrapers
+    """
     os.chdir(collect_path)
     settings = get_project_settings()
     sl = SpiderLoader.from_settings(settings)
     return sl.list()
 
 
-@cli.command()
-def export_scrapers():
+@cli.command(help=_first_doc_line(scraper_list))
+def export_scrapers(scraper_list):
     click.echo(json.dumps(scraper_list()))
 
 
 @cli.command()
 @click.argument("name")
 @click.argument("schema")
-def run_all(name, schema):
+def create_from_scraper(name, schema):
+    """Create all postgres tables for a scraper into a target schema.
+
+    """
     create_schema(schema)
     scrape(name, schema)
     create_base_tables(schema, drop_scrape=False)
@@ -122,6 +173,20 @@ def run_all(name, schema):
     release_objects(schema)
     schema_analysis(schema)
     postgres_tables(schema, drop_release_objects=True)
+
+
+@cli.command()
+@click.argument("schema")
+@click.argument("name")
+@click.argument("date")
+def export_all(name, schema, date):
+    """Export data to all export soruces from schama given a date.
+
+    """
+    export_csv(schema, name, date)
+    export_xlsx(schema, name, date)
+    export_bigquery(schema, name, date)
+    export_pgdump(schema, name, date)
 
 
 @cli.command("create-schema")
@@ -134,7 +199,7 @@ def create_schema(schema):
     engine = get_engine()
     with engine.begin() as connection:
         connection.execute(
-            f"""drop schema if exists {schema} cascade;
+            f"""DROP SCHEMA IF EXISTS {schema} CASCADE;
                 create schema {schema};"""
         )
 
@@ -162,7 +227,7 @@ def _drop_schema(schema):
 def drop_schema(schema):
     engine = get_engine()
     with engine.begin() as connection:
-        connection.execute(f"""drop schema if exists {schema} cascade;""")
+        connection.execute(f"""DROP SCHEMA IF EXISTS {schema} CASCADE;""")
 
 
 @cli.command("scrape")
@@ -181,14 +246,13 @@ def scrape(name, schema):
     engine = get_engine(schema)
     with engine.begin() as connection:
         connection.execute(
-            f"""drop table if exists _scrape_data;
-                drop table if exists _job_info;
-                create table _scrape_data(name TEXT, url TEXT, data_type TEXT, file_name TEXT,
-                                                 valid BOOLEAN, data JSONB, error_data TEXT);
-                create table _job_info(name TEXT, info JSONB, logs TEXT);
+            """DROP TABLE IF EXISTS _scrape_data;
+               DROP TABLE IF EXISTS _job_info;
+               CREATE TABLE _scrape_data(name TEXT, url TEXT, data_type TEXT, file_name TEXT,
+                                         valid BOOLEAN, data JSONB, error_data TEXT);
+               CREATE TABLE _job_info(name TEXT, info JSONB, logs TEXT);
             """
         )
-        time_now = str(datetime.datetime.utcnow())
 
     os.chdir(collect_path)
     settings = get_project_settings()
@@ -268,18 +332,18 @@ def scrape(name, schema):
 
     with engine.begin() as connection, gzip.open(str(csv_file_path), "rt") as f:
         connection.execute(
-            sa.text(f"insert into _job_info values (:name, :info, :logs)"),
+            sa.text("INSERT INTO _job_info VALUES (:name, :info, :logs)"),
             name=name,
             info=info_data,
             logs=tail(log_file),
         )
 
         dbapi_conn = connection.connection
-        copy_sql = f"COPY _scrape_data FROM STDIN WITH CSV"
+        copy_sql = "COPY _scrape_data FROM STDIN WITH CSV"
         cur = dbapi_conn.cursor()
         cur.copy_expert(copy_sql, f)
 
-        result = connection.execute(f"select count(*) from _scrape_data").first()
+        result = connection.execute("SELECT count(*) FROM _scrape_data").first()
 
         print(f"{result['count']} files scraped")
         if result.count == 0:
@@ -299,71 +363,71 @@ def create_base_tables(schema, drop_scrape=True):
     engine = get_engine(schema)
 
     package_data_sql = """
-       select 
-           distinct md5((data - 'releases' - 'records')::text), 
+       SELECT
+           distinct md5((data - 'releases' - 'records')::text),
            data - 'releases' - 'records' package_data
-       from 
-           _scrape_data 
-       where 
+       FROM
+           _scrape_data
+       WHERE
            data_type in ('release_package', 'record_package')
     """
     create_table("_package_data", schema, package_data_sql)
 
     engine.execute(
         """
-        drop sequence if exists _generated_release_id;
+        drop sequence IF EXISTS _generated_release_id;
         create sequence _generated_release_id;
         """
     )
 
-    compiled_releases_sql = f"""
-       select
+    compiled_releases_sql = """
+       SELECT
            min(nextval('_generated_release_id')) compiled_release_id,
-           name, 
-           url, 
-           data_type, 
-           file_name, 
+           name,
+           url,
+           data_type,
+           file_name,
            null package_data,
            coalesce(release ->> 'ocid', gen_random_uuid()::text) ocid,
            jsonb_agg(release) release_list,
            null rest_of_record,
            null compiled_release,
            null compile_error
-       from 
+       FROM
            _scrape_data,
            jsonb_path_query(data, '$.releases[*]') release
-       where 
+       WHERE
            data_type in ('release_package')
 
-       group by name, url, data_type, file_name, coalesce(release ->> 'ocid', gen_random_uuid()::text)
+       GROUP BY name, url, data_type, file_name, coalesce(release ->> 'ocid', gen_random_uuid()::text)
 
-       union all
+       UNION ALL
 
-       select
+       SELECT
            nextval('_generated_release_id'),
-           name, 
-           url, 
-           data_type, 
-           file_name, 
+           name,
+           url,
+           data_type,
+           file_name,
            to_jsonb(md5((data - 'releases' - 'records')::text)) package_data,
            record ->> 'ocid',
            record -> 'releases',
            record - 'compiledRelease' rest_of_record,
            record -> 'compiledRelease' compiled_release,
            null compile_error
-       from 
+       FROM
            _scrape_data,
            jsonb_path_query(data, '$.records[*]') record
-       where 
+       WHERE
            data_type in ('record_package')
     """
 
     create_table("_compiled_releases", schema, compiled_releases_sql)
 
     if drop_scrape:
-        engine.execute("drop table if exists _scrape_data")
+        engine.execute("DROP TABLE IF EXISTS _scrape_data")
 
-    result = engine.execute(f"select count(*) from _compiled_releases").first()
+    result = engine.execute("SELECT count(*) FROM _compiled_releases").first()
 
     print(f"{result['count']} compiled releases")
     if result.count == 0:
@@ -385,14 +449,14 @@ def compile_releases(schema):
 
         engine.execute(
             """
-            drop table if exists _tmp_compiled_releases;
-            create table _tmp_compiled_releases(compiled_release_id bigint, compiled_release JSONB, compile_error TEXT) 
+            DROP TABLE IF EXISTS _tmp_compiled_releases;
+            CREATE TABLE _tmp_compiled_releases(compiled_release_id bigint, compiled_release JSONB, compile_error TEXT)
         """
         )
 
         merger = ocdsmerge.Merger()
         results = engine.execute(
-            "select compiled_release_id, release_list from _compiled_releases where compiled_release is null"
+            "SELECT compiled_release_id, release_list FROM _compiled_releases WHERE compiled_release is null"
         )
 
         print("Making CSV file")
@@ -400,15 +464,21 @@ def compile_releases(schema):
             csv_writer = csv.writer(csv_file)
             for num, result in enumerate(results):
                 try:
-                    compiled_release = merger.create_compiled_release(result.release_list)
+                    compiled_release = merger.create_compiled_release(
+                        result.release_list
+                    )
                     error = ""
                 except Exception as e:
                     compiled_release = {}
                     error = str(e)
-                csv_writer.writerow([result.compiled_release_id, json.dumps(compiled_release), error])
+                csv_writer.writerow(
+                    [result.compiled_release_id, json.dumps(compiled_release), error]
+                )
 
         print("Importing file")
-        with engine.begin() as connection, Timer(), gzip.open(str(csv_file_path), "rt") as f:
+        with engine.begin() as connection, Timer(), gzip.open(
+            str(csv_file_path), "rt"
+        ) as f:
             dbapi_conn = connection.connection
             copy_sql = "COPY _tmp_compiled_releases FROM STDIN WITH CSV"
             cur = dbapi_conn.cursor()
@@ -417,7 +487,7 @@ def compile_releases(schema):
         print("Updating table")
         with engine.begin() as connection, Timer():
             connection.execute(
-                """update _compiled_releases cr 
+                """UPDATE _compiled_releases cr
                    SET compiled_release = tmp.compiled_release,
                        compile_error = tmp.compile_error
                    FROM _tmp_compiled_releases tmp
@@ -425,7 +495,7 @@ def compile_releases(schema):
             )
             connection.execute(
                 """
-                drop table if exists _tmp_compiled_releases;
+                DROP TABLE IF EXISTS _tmp_compiled_releases;
             """
             )
 
@@ -460,17 +530,23 @@ def traverse_object(obj, emit_object, full_path=tuple(), no_index_path=tuple()):
             for num, item in enumerate(value):
                 if not isinstance(item, dict):
                     item = {"__error": "A non object is in array of objects"}
-                yield from traverse_object(item, True, full_path + (key, num), no_index_path + (key,))
+                yield from traverse_object(
+                    item, True, full_path + (key, num), no_index_path + (key,)
+                )
             obj.pop(key)
         elif isinstance(value, list):
             if not all(isinstance(item, str) for item in value):
                 obj[key] = json.dumps(value)
         elif isinstance(value, dict):
             if no_index_path + (key,) in EMIT_OBJECT_PATHS:
-                yield from traverse_object(value, True, full_path + (key,), no_index_path + (key,))
+                yield from traverse_object(
+                    value, True, full_path + (key,), no_index_path + (key,)
+                )
                 obj.pop(key)
             else:
-                yield from traverse_object(value, False, full_path + (key,), no_index_path + (key,))
+                yield from traverse_object(
+                    value, False, full_path + (key,), no_index_path + (key,)
+                )
 
     if obj and emit_object:
         yield obj, full_path, no_index_path
@@ -487,9 +563,12 @@ def path_info(full_path, no_index_path):
     path_key = all_paths[-1] if all_paths else []
 
     object_key = ".".join(str(key) for key in path_key)
-    parent_keys_list = [".".join(str(key) for key in parent_path) for parent_path in parent_paths]
+    parent_keys_list = [
+        ".".join(str(key) for key in parent_path) for parent_path in parent_paths
+    ]
     parent_keys_no_index = [
-        ".".join(str(key) for key in parent_path if not isinstance(key, int)) for parent_path in parent_paths
+        ".".join(str(key) for key in parent_path if not isinstance(key, int))
+        for parent_path in parent_paths
     ]
     object_type = "_".join(str(key) for key in no_index_path) or "release"
     parent_keys = (dict(zip(parent_keys_no_index, parent_keys_list)),)
@@ -510,10 +589,14 @@ def create_rows(result):
             parent_keys,
         ) = path_info(full_path, no_index_path)
 
-        object["_link"] = f'{result.compiled_release_id}{"." if object_key else ""}{object_key}'
+        object[
+            "_link"
+        ] = f'{result.compiled_release_id}{"." if object_key else ""}{object_key}'
         object["_link_release"] = str(result.compiled_release_id)
         for no_index_path, full_path in zip(parent_keys_no_index, parent_keys_list):
-            object[f"_link_{no_index_path}"] = f"{result.compiled_release_id}.{full_path}"
+            object[
+                f"_link_{no_index_path}"
+            ] = f"{result.compiled_release_id}.{full_path}"
 
         row = dict(
             compiled_release_id=result.compiled_release_id,
@@ -540,14 +623,22 @@ def create_rows(result):
                 party = parties.get(parties_id)
                 if party:
                     object["_link_party"] = party["_link"]
-                    object["_party"] = {key: value for key, value in party.items() if not key.startswith("_")}
+                    object["_party"] = {
+                        key: value
+                        for key, value in party.items()
+                        if not key.startswith("_")
+                    }
         if row["object_type"] == "contracts":
             award_id = object.get("awardID")
             if award_id:
                 award = awards.get(award_id)
                 if award:
                     object["_link_award"] = award["_link"]
-                    object["_award"] = {key: value for key, value in award.items() if not key.startswith("_")}
+                    object["_award"] = {
+                        key: value
+                        for key, value in award.items()
+                        if not key.startswith("_")
+                    }
         try:
             row["object"] = orjson.dumps(dict(flatten_object(object))).decode()
         except TypeError:
@@ -569,17 +660,21 @@ def release_objects(schema):
     engine = get_engine(schema)
     engine.execute(
         """
-        drop table if exists _release_objects;
-        create table _release_objects(compiled_release_id bigint,
+        DROP TABLE IF EXISTS _release_objects;
+        CREATE TABLE _release_objects(compiled_release_id bigint,
         object_key TEXT, parent_keys JSONB, object_type TEXT, object JSONB);
         """
     )
 
-    results = engine.execute("select compiled_release_id, compiled_release from _compiled_releases")
+    results = engine.execute(
+        "SELECT compiled_release_id, compiled_release FROM _compiled_releases"
+    )
 
     with tempfile.TemporaryDirectory() as tmpdirname:
         with engine.begin() as connection, Timer():
-            results = connection.execute("select compiled_release_id, compiled_release from _compiled_releases")
+            results = connection.execute(
+                "SELECT compiled_release_id, compiled_release FROM _compiled_releases"
+            )
             paths_csv_file = tmpdirname + "/paths.csv"
 
             print("Making CSV file")
@@ -589,7 +684,9 @@ def release_objects(schema):
                     csv_writer.writerows(create_rows(result))
 
         print("Uploading Data")
-        with engine.begin() as connection, gzip.open(paths_csv_file, "rt") as f, Timer():
+        with engine.begin() as connection, gzip.open(
+            paths_csv_file, "rt"
+        ) as f, Timer():
             dbapi_conn = connection.connection
             copy_sql = f"COPY {schema}._release_objects FROM STDIN WITH CSV"
             cur = dbapi_conn.cursor()
@@ -618,14 +715,20 @@ def process_schema_object(path, current_name, flattened, obj):
         )
         if prop_type == "object":
             if path + (name,) in EMIT_OBJECT_PATHS:
-                flattened = process_schema_object(path + (name,), tuple(), flattened, prop)
+                flattened = process_schema_object(
+                    path + (name,), tuple(), flattened, prop
+                )
             else:
-                flattened = process_schema_object(path, current_name + (name,), flattened, prop)
+                flattened = process_schema_object(
+                    path, current_name + (name,), flattened, prop
+                )
         elif prop_type == "array":
             if "object" not in prop["items"]["type"]:
                 current_object["_".join(current_name + (name,))] = prop_info
             else:
-                flattened = process_schema_object(path + current_name + (name,), tuple(), flattened, prop["items"])
+                flattened = process_schema_object(
+                    path + current_name + (name,), tuple(), flattened, prop["items"]
+                )
         else:
             current_object["_".join(current_name + (name,))] = prop_info
 
@@ -656,30 +759,37 @@ def schema_analysis(schema):
     create_table(
         "_object_type_aggregate",
         schema,
-        """select
+        """SELECT
               object_type,
               each.key,
               jsonb_typeof(value) value_type,
-              count(*) from _release_objects ro, jsonb_each(object) each group by 1,2,3;
+              count(*)
+           FROM
+              _release_objects ro, jsonb_each(object) each
+           GROUP BY 1,2,3;
         """,
     )
 
     create_table(
         "_object_type_fields",
         schema,
-        """select
+        """SELECT
               object_type,
               key,
-              case when
+              CASE WHEN
                   count(*) > 1
-              then 'string'
-              else max(value_type) end value_type,
-              sum("count") as "count" 
-              from _object_type_aggregate group by 1,2;
+              THEN 'string'
+              ELSE max(value_type) end value_type,
+              SUM("count") AS "count"
+           FROM
+              _object_type_aggregate
+           GROUP BY 1,2;
         """,
     )
 
-    schema_info = process_schema_object(tuple(), tuple(), {}, JsonRef.replace_refs(standard_schema))
+    schema_info = process_schema_object(
+        tuple(), tuple(), {}, JsonRef.replace_refs(standard_schema)
+    )
     for item in schema_info:
         if len(item) > 31:
             print(item)
@@ -688,7 +798,7 @@ def schema_analysis(schema):
 
     with get_engine(schema).begin() as connection:
         result = connection.execute(
-            """select object_type, jsonb_object_agg(key, value_type) fields from _object_type_fields group by 1;"""
+            """SELECT object_type, jsonb_object_agg(key, value_type) fields FROM _object_type_fields GROUP BY 1;"""
         )
         result_dict = {row.object_type: row.fields for row in result}
 
@@ -738,8 +848,8 @@ def schema_analysis(schema):
 
         connection.execute(
             """
-            drop table if exists _object_details;
-            create table _object_details(id SERIAL, object_type text, object_details JSONB);
+            DROP TABLE IF EXISTS _object_details;
+            CREATE TABLE _object_details(id SERIAL, object_type text, object_details JSONB);
         """
         )
 
@@ -781,20 +891,24 @@ def _postgres_tables(schema):
 
 def postgres_tables(schema, drop_release_objects=True):
     with get_engine(schema).begin() as connection:
-        result = list(connection.execute("select object_type, object_details from _object_details order by id"))
+        result = list(
+            connection.execute(
+                "SELECT object_type, object_details FROM _object_details order by id"
+            )
+        )
 
     for object_type, object_details in result:
         field_sql, as_sql = create_field_sql(object_details)
         table_sql = f"""
-           select {field_sql} 
-           FROM _release_objects, jsonb_to_record(object) as ({as_sql})  
+           SELECT {field_sql}
+           FROM _release_objects, jsonb_to_record(object) AS ({as_sql})
            WHERE object_type = :object_type
         """
         create_table(object_type, schema, table_sql, object_type=object_type)
 
     if drop_release_objects:
         with get_engine(schema).begin() as connection:
-            connection.execute("drop table if exists _release_objects")
+            connection.execute("DROP TABLE IF EXISTS _release_objects")
 
 
 def generate_object_type_rows(object_detials_results):
@@ -820,9 +934,15 @@ def _export_csv(schema, name, date):
 
 
 def export_csv(schema, name, date):
-    with tempfile.TemporaryDirectory() as tmpdirname, get_engine(schema).begin() as connection:
+    with tempfile.TemporaryDirectory() as tmpdirname, get_engine(
+        schema
+    ).begin() as connection:
         with zipfile.ZipFile(f"{tmpdirname}/output.zip", "w") as zip_file:
-            result = list(connection.execute("select object_type, object_details from _object_details order by id"))
+            result = list(
+                connection.execute(
+                    "SELECT object_type, object_details FROM _object_details order by id"
+                )
+            )
             for object_type, object_details in result:
                 with open(f"{tmpdirname}/{object_type}.csv", "wb") as out:
                     dbapi_conn = connection.connection
@@ -830,7 +950,10 @@ def export_csv(schema, name, date):
                     cur = dbapi_conn.cursor()
                     cur.copy_expert(copy_sql, out)
 
-                zip_file.write(f"{tmpdirname}/{object_type}.csv", arcname=f"{name}/{object_type}.csv")
+                zip_file.write(
+                    f"{tmpdirname}/{object_type}.csv",
+                    arcname=f"{name}/{object_type}.csv",
+                )
 
             with open(f"{tmpdirname}/fields.csv", "w") as csv_file:
                 csv_writer = csv.writer(csv_file)
@@ -840,7 +963,9 @@ def export_csv(schema, name, date):
         bucket = get_s3_bucket()
         if bucket:
             object = bucket.Object(f"{name}/ocdadata_{name}_csv.zip")
-            object.upload_file(f"{tmpdirname}/output.zip", ExtraArgs={"ACL": "public-read"})
+            object.upload_file(
+                f"{tmpdirname}/output.zip", ExtraArgs={"ACL": "public-read"}
+            )
             metadata_object = bucket.Object(f"{name}/metadata/csv_upload_dates/{date}")
             metadata_object.put(ACL="public-read", Body=b"")
 
@@ -867,7 +992,7 @@ def generate_spreadsheet_rows(result, object_details):
         data = row.data
         line = []
         for field in object_details:
-            value = data[field["name"]] or ''
+            value = data[field["name"]] or ""
             if isinstance(value, list):
                 value = ", ".join(value)
             if field["type"] == "string":
@@ -875,7 +1000,8 @@ def generate_spreadsheet_rows(result, object_details):
                 new_value = ILLEGAL_CHARACTERS_RE.sub("", value)
                 if new_value != value:
                     print(
-                        f"Character(s) in '{value}' are not allowed in a spreadsheet cell. Those character(s) will be removed"
+                        f'''Character(s) in '{value}' are not allowed in a spreadsheet cell.
+                            Those character(s) will be removed'''
                     )
                 value = new_value
             line.append(value)
@@ -891,10 +1017,14 @@ def _export_xlsx(schema, name, date):
 
 
 def export_xlsx(schema, name, date):
-    with tempfile.TemporaryDirectory() as tmpdirname, get_engine(schema).begin() as connection:
+    with tempfile.TemporaryDirectory() as tmpdirname, get_engine(
+        schema
+    ).begin() as connection:
 
         largest_row_count = (
-            connection.execute("select max(count) as largest_row_count from _object_type_fields")
+            connection.execute(
+                "SELECT max(count) as largest_row_count FROM _object_type_fields"
+            )
             .first()
             .largest_row_count
         )
@@ -904,7 +1034,9 @@ def export_xlsx(schema, name, date):
             return
 
         object_details_result = list(
-            connection.execute("select object_type, object_details from _object_details order by id")
+            connection.execute(
+                "SELECT object_type, object_details FROM _object_details order by id"
+            )
         )
 
         workbook = openpyxl.Workbook(write_only=True)
@@ -916,7 +1048,9 @@ def export_xlsx(schema, name, date):
 
         for object_type, object_details in object_details_result:
             result = connection.execute(
-                sa.text(f'select to_json("{object_type.lower()}") AS data from "{object_type.lower()}"')
+                sa.text(
+                    f'SELECT to_json("{object_type.lower()}") AS data FROM "{object_type.lower()}"'
+                )
             )
 
             worksheet = workbook.create_sheet()
@@ -932,11 +1066,15 @@ def export_xlsx(schema, name, date):
         bucket = get_s3_bucket()
         if bucket:
             object = bucket.Object(f"{name}/ocdsdata_{name}.xlsx")
-            object.upload_file(f"{tmpdirname}/data.xlsx", ExtraArgs={"ACL": "public-read"})
+            object.upload_file(
+                f"{tmpdirname}/data.xlsx", ExtraArgs={"ACL": "public-read"}
+            )
             metadata_object = bucket.Object(f"{name}/metadata/xlsx_upload_dates/{date}")
             metadata_object.put(ACL="public-read", Body=b"")
 
-name_allowed_pattern = re.compile('[\W]+')
+
+name_allowed_pattern = re.compile(r"[\W]+")
+
 
 def create_avro_schema(object_type, object_details):
     fields = []
@@ -947,7 +1085,7 @@ def create_avro_schema(object_type, object_details):
             type = "double"
 
         field = {
-            "name": name_allowed_pattern.sub('', item["name"]),
+            "name": name_allowed_pattern.sub("", item["name"]),
             "type": [type, "null"],
             "doc": item.get("description"),
         }
@@ -965,12 +1103,16 @@ def create_avro_schema(object_type, object_details):
 
 def generate_avro_records(result, object_details):
 
-    cast_to_string = set([field["name"] for field in object_details if field["type"] == "string"])
+    cast_to_string = set(
+        [field["name"] for field in object_details if field["type"] == "string"]
+    )
 
     for row in result:
         new_object = {}
         for key, value in row.object.items():
-            new_object[name_allowed_pattern.sub('', key)] = str(value) if key in cast_to_string else value
+            new_object[name_allowed_pattern.sub("", key)] = (
+                str(value) if key in cast_to_string else value
+            )
         yield new_object
 
 
@@ -984,13 +1126,17 @@ def _export_bigquery(schema, name, date):
 
 def export_bigquery(schema, name, date):
 
-    json_acct_info = orjson.loads(base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"]))
+    json_acct_info = orjson.loads(
+        base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"])
+    )
 
     credentials = service_account.Credentials.from_service_account_info(json_acct_info)
 
     client = bigquery.Client(credentials=credentials)
 
-    with tempfile.TemporaryDirectory() as tmpdirname, get_engine(schema).begin() as connection:
+    with tempfile.TemporaryDirectory() as tmpdirname, get_engine(
+        schema
+    ).begin() as connection:
         dataset_id = f"{client.project}.{name}"
         client.delete_dataset(dataset_id, delete_contents=True, not_found_ok=True)
         dataset = bigquery.Dataset(dataset_id)
@@ -999,16 +1145,22 @@ def export_bigquery(schema, name, date):
         dataset = client.create_dataset(dataset, timeout=30)
 
         access_entries = list(dataset.access_entries)
-        access_entries.append(AccessEntry("READER", "specialGroup", "allAuthenticatedUsers"))
+        access_entries.append(
+            AccessEntry("READER", "specialGroup", "allAuthenticatedUsers")
+        )
         dataset.access_entries = access_entries
 
         dataset = client.update_dataset(dataset, ["access_entries"])
 
-        result = connection.execute("select object_type, object_details from _object_details order by id")
+        result = connection.execute(
+            "SELECT object_type, object_details FROM _object_details order by id"
+        )
         for object_type, object_details in list(result):
             print(f"loading {object_type}")
             result = connection.execute(
-                sa.text(f'select to_jsonb("{object_type.lower()}") AS object from "{object_type.lower()}"')
+                sa.text(
+                    f'SELECT to_jsonb("{object_type.lower()}") AS object FROM "{object_type.lower()}"'
+                )
             )
             schema = create_avro_schema(object_type, object_details)
 
@@ -1023,16 +1175,26 @@ def export_bigquery(schema, name, date):
 
             table_id = f"{client.project}.{name}.{object_type}"
 
-            job_config = bigquery.LoadJobConfig(source_format=bigquery.SourceFormat.AVRO)
+            job_config = bigquery.LoadJobConfig(
+                source_format=bigquery.SourceFormat.AVRO
+            )
 
             with open(f"{tmpdirname}/{object_type}.avro", "rb") as source_file:
-                client.load_table_from_file(source_file, table_id, job_config=job_config, size=None, timeout=5)
+                client.load_table_from_file(
+                    source_file, table_id, job_config=job_config, size=None, timeout=5
+                )
 
             bucket = get_s3_bucket()
             if bucket:
-                object = bucket.Object(f"{name}/avro/ocdsdata_{name}_{object_type}.avro")
-                object.upload_file(f"{tmpdirname}/{object_type}.avro", ExtraArgs={"ACL": "public-read"})
-                metadata_object = bucket.Object(f"{name}/metadata/avro_upload_dates/{date}")
+                object = bucket.Object(
+                    f"{name}/avro/ocdsdata_{name}_{object_type}.avro"
+                )
+                object.upload_file(
+                    f"{tmpdirname}/{object_type}.avro", ExtraArgs={"ACL": "public-read"}
+                )
+                metadata_object = bucket.Object(
+                    f"{name}/metadata/avro_upload_dates/{date}"
+                )
                 metadata_object.put(ACL="public-read", Body=b"")
 
 
@@ -1048,17 +1210,23 @@ def export_stats(schema, name, date):
     bucket = get_s3_bucket()
 
     with get_engine(schema).begin() as connection:
-        result = connection.execute("select to_json(_job_info) AS job_info from _job_info")
+        result = connection.execute(
+            "SELECT to_json(_job_info) AS job_info FROM _job_info"
+        )
         job_info = orjson.dumps(result.first().job_info)
         job_info_object = bucket.Object(f"{name}/metadata/job_info/{date}.json")
         job_info_object.put(ACL="public-read", Body=job_info)
 
-        result = connection.execute("select to_json(_object_type_fields) AS data from _object_type_fields")
+        result = connection.execute(
+            "SELECT to_json(_object_type_fields) AS data FROM _object_type_fields"
+        )
         field_info = orjson.dumps([row.data for row in result])
         field_info_object = bucket.Object(f"{name}/metadata/field_info/{date}.json")
         field_info_object.put(ACL="public-read", Body=field_info)
 
-        result = connection.execute("select to_json(_object_details) AS data from _object_details")
+        result = connection.execute(
+            "SELECT to_json(_object_details) AS data FROM _object_details"
+        )
         field_info = orjson.dumps([row.data for row in result])
         field_info_object = bucket.Object(f"{name}/metadata/field_types/{date}.json")
         field_info_object.put(ACL="public-read", Body=field_info)
@@ -1091,7 +1259,9 @@ def export_pgdump(schema, name, date):
         )
 
         pg_dump_object = bucket.Object(f"{name}/ocdsdata_{name}.pg_dump")
-        pg_dump_object.upload_file(f"{tmpdirname}/dump.sql", ExtraArgs={"ACL": "public-read"})
+        pg_dump_object.upload_file(
+            f"{tmpdirname}/dump.sql", ExtraArgs={"ACL": "public-read"}
+        )
         metadata_object = bucket.Object(f"{name}/metadata/pg_dump_upload_dates/{date}")
         metadata_object.put(ACL="public-read", Body=b"")
         make_notebook(name)
@@ -1102,37 +1272,54 @@ def export_pgdump(schema, name, date):
 def _make_notebook(schema):
     make_notebook(schema)
 
+
 def make_notebook(schema):
     bucket = get_s3_bucket()
 
-    with tempfile.TemporaryDirectory() as tmpdirname, open(this_path / 'notebook/template.ipynb') as template:
+    with tempfile.TemporaryDirectory() as tmpdirname, open(
+        this_path / "notebook/template.ipynb"
+    ) as template:
         template_text = template.read()
-        template_text = template_text.replace('zambia', schema)
-        template_text = template_text.replace('Zambia', schema.replace('_',' ').capitalize())
-        with open(tmpdirname + '/notebook.ipynb', 'w+') as output:
+        template_text = template_text.replace("zambia", schema)
+        template_text = template_text.replace(
+            "Zambia", schema.replace("_", " ").capitalize()
+        )
+        with open(tmpdirname + "/notebook.ipynb", "w+") as output:
             output.write(template_text)
 
-        json_acct_info = orjson.loads(base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"]))
-        credentials = service_account.Credentials.from_service_account_info(json_acct_info)
+        json_acct_info = orjson.loads(
+            base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"])
+        )
+        credentials = service_account.Credentials.from_service_account_info(
+            json_acct_info
+        )
 
-        service = build('drive', 'v3', credentials=credentials)
+        service = build("drive", "v3", credentials=credentials)
 
-        response = service.files().list(q=f"mimeType='application/vnd.google.colaboratory' and name = '{schema}.ipynb'",
-                                        spaces='drive', pageSize=1000).execute()
+        response = (
+            service.files()
+            .list(
+                q=f"mimeType='application/vnd.google.colaboratory' and name = '{schema}.ipynb'",
+                spaces="drive",
+                pageSize=1000,
+            )
+            .execute()
+        )
 
-        for file in response.get('files', []):
-            service.files().delete(fileId=file['id']).execute()
+        for file in response.get("files", []):
+            service.files().delete(fileId=file["id"]).execute()
 
-        folder_id = '1wNkeGqdDP3wQR4xe8yyFreOez9U47Vz8'
-        file_metadata = {
-            'name': f'{schema}.ipynb',
-            'parents': [folder_id]
-        }
-        media = MediaFileUpload(tmpdirname + '/notebook.ipynb',
-                                mimetype='application/vnd.google.colaboratory')
-        file = service.files().create(body=file_metadata,
-                                      media_body=media,
-                                      fields='id').execute()
+        folder_id = "1wNkeGqdDP3wQR4xe8yyFreOez9U47Vz8"
+        file_metadata = {"name": f"{schema}.ipynb", "parents": [folder_id]}
+        media = MediaFileUpload(
+            tmpdirname + "/notebook.ipynb",
+            mimetype="application/vnd.google.colaboratory",
+        )
+        file = (
+            service.files()
+            .create(body=file_metadata, media_body=media, fields="id")
+            .execute()
+        )
 
         pg_dump_object = bucket.Object(f"{schema}/ocdsdata_{schema}_notebook.json")
         pg_dump_object.put(ACL="public-read", Body=orjson.dumps(file))
@@ -1141,10 +1328,10 @@ def make_notebook(schema):
 @cli.command("make-notebooks")
 def _make_notebooks():
     bucket = get_s3_bucket()
-    stats_object = bucket.Object(f"metadata/stats.json")
+    stats_object = bucket.Object("metadata/stats.json")
     stats = json.load(stats_object.get()["Body"])
     for schema, info in stats.items():
-        if info.get('pg_dump'):
+        if info.get("pg_dump"):
             make_notebook(schema)
 
 
@@ -1164,7 +1351,7 @@ def collect_stats():
             "pg_dump": {},
             "avro": {"files": {}},
             "big_query": {},
-            "notebookIdFile": '',
+            "notebookIdFile": "",
             "field_info": {},
             "field_types": {},
             "table_stats": {},
@@ -1194,9 +1381,11 @@ def collect_stats():
         if file_name.endswith("avro"):
             obj = re.sub(f"^ocdsdata_{scraper}_", "", file_name[:-5])
             out[scraper]["avro"]["files"][obj] = item_url
-            out[scraper]["big_query"].update(url=f'https://console.cloud.google.com/bigquery?project=ocdsdata&p=ocdsdata&d={scraper}&page=dataset')
+            out[scraper]["big_query"].update(
+                url=f"https://console.cloud.google.com/bigquery?project=ocdsdata&p=ocdsdata&d={scraper}&page=dataset"
+            )
         if file_name.endswith("_notebook.json"):
-            out[scraper]['notebookIdFile'] = item_url
+            out[scraper]["notebookIdFile"] = item_url
 
         if parts[1] not in ("metadata", "metatdata"):
             continue
@@ -1233,10 +1422,9 @@ def collect_stats():
         latest_job_info_item = data["job_info"].pop("latest_item", None)
         if latest_job_info_item:
             job_info_data = json.load(latest_job_info_item.get()["Body"])
-            data["job_info"]['latest_info'] = job_info_data['info']
+            data["job_info"]["latest_info"] = job_info_data["info"]
 
-
-    stats_object = bucket.Object(f"metadata/stats.json")
+    stats_object = bucket.Object("metadata/stats.json")
     stats_object.put(ACL="public-read", Body=orjson.dumps(out))
 
 

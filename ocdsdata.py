@@ -156,7 +156,7 @@ def scraper_list():
 
 
 @cli.command(help=_first_doc_line(scraper_list))
-def export_scrapers(scraper_list):
+def export_scrapers():
     click.echo(json.dumps(scraper_list()))
 
 

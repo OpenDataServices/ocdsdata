@@ -42,12 +42,12 @@ collect_path = str((this_path / "kingfisher-collect").absolute())
 
 
 def _first_doc_line(function):
-    return function.__doc__.split('\n')[0]
+    return function.__doc__.split("\n")[0]
 
 
 @functools.lru_cache(None)
 def get_engine(schema=None, db_uri=None, pool_size=1):
-    """ Get SQLAlchemy engine
+    """Get SQLAlchemy engine
 
     Will cache engine if all arguments are the same so not expensive to call multiple times.
 
@@ -66,7 +66,7 @@ def get_engine(schema=None, db_uri=None, pool_size=1):
     -------
     sqlalchemy.Engine
         SQLAlchemy Engine object set up to query specified schema (or public schema)
-        """
+    """
 
     if not db_uri:
         db_uri = os.environ["DATABASE_URL"]
@@ -79,7 +79,7 @@ def get_engine(schema=None, db_uri=None, pool_size=1):
 
 
 def get_s3_bucket():
-    """ Get S3 bucket object
+    """Get S3 bucket object
 
     Needs environment variables:
 
@@ -106,7 +106,7 @@ def get_s3_bucket():
 
 
 def create_table(table, schema, sql, **params):
-    """ Create table under given schema by supplying SQL
+    """Create table under given schema by supplying SQL
 
     Parameters
     ----------
@@ -164,9 +164,7 @@ def export_scrapers():
 @click.argument("name")
 @click.argument("schema")
 def create_from_scraper(name, schema):
-    """Create all postgres tables for a scraper into a target schema.
-
-    """
+    """Create all postgres tables for a scraper into a target schema."""
     create_schema(schema)
     scrape(name, schema)
     create_base_tables(schema, drop_scrape=False)
@@ -181,9 +179,7 @@ def create_from_scraper(name, schema):
 @click.argument("name")
 @click.argument("date")
 def export_all(name, schema, date):
-    """Export data to all export soruces from schama given a date.
-
-    """
+    """Export data to all export soruces from schama given a date."""
     export_csv(schema, name, date)
     export_xlsx(schema, name, date)
     export_sqlite(schema, name, date)
@@ -964,7 +960,7 @@ def export_csv(schema, name, date):
 
         bucket = get_s3_bucket()
         if bucket:
-            object = bucket.Object(f"{name}/ocdadata_{name}_csv.zip")
+            object = bucket.Object(f"{name}/ocdsdata_{name}_csv.zip")
             object.upload_file(
                 f"{tmpdirname}/output.zip", ExtraArgs={"ACL": "public-read"}
             )
@@ -1002,8 +998,8 @@ def generate_spreadsheet_rows(result, object_details):
                 new_value = ILLEGAL_CHARACTERS_RE.sub("", value)
                 if new_value != value:
                     print(
-                        f'''Character(s) in '{value}' are not allowed in a spreadsheet cell.
-                            Those character(s) will be removed'''
+                        f"""Character(s) in '{value}' are not allowed in a spreadsheet cell.
+                            Those character(s) will be removed"""
                     )
                 value = new_value
             line.append(value)
@@ -1218,7 +1214,7 @@ def export_sqlite(schema, name, date):
             )
         )
         for object_type, object_details in result:
-            print(f'importing table {object_type}')
+            print(f"importing table {object_type}")
             with open(f"{tmpdirname}/{object_type}.csv", "wb") as out:
                 dbapi_conn = connection.connection
                 copy_sql = f'COPY "{object_type.lower()}" TO STDOUT WITH CSV'
@@ -1226,12 +1222,17 @@ def export_sqlite(schema, name, date):
                 cur.copy_expert(copy_sql, out)
 
             _, field_def = create_field_sql(object_details)
-            import_sql = f'''
+            import_sql = f"""
             .mode csv
             CREATE TABLE "{object_type}" ({field_def}) ;
-            .import {tmpdirname}/{object_type}.csv "{object_type}" '''
+            .import {tmpdirname}/{object_type}.csv "{object_type}" """
 
-            subprocess.run(['sqlite3', f'{tmpdirname}/{name}.sqlite'], input=dedent(import_sql), text=True, check=True)
+            subprocess.run(
+                ["sqlite3", f"{tmpdirname}/{name}.sqlite"],
+                input=dedent(import_sql),
+                text=True,
+                check=True,
+            )
 
             os.remove(f"{tmpdirname}/{object_type}.csv")
 
@@ -1239,19 +1240,26 @@ def export_sqlite(schema, name, date):
             csv_writer = csv.writer(csv_file)
             csv_writer.writerows(generate_object_type_rows(result))
 
-        import_sql = f'''
+        import_sql = f"""
             .mode csv
-            .import {tmpdirname}/fields.csv "fields" '''
+            .import {tmpdirname}/fields.csv "fields" """
 
-        subprocess.run(['sqlite3', f'{tmpdirname}/{name}.sqlite'], input=dedent(import_sql), text=True, check=True)
+        subprocess.run(
+            ["sqlite3", f"{tmpdirname}/{name}.sqlite"],
+            input=dedent(import_sql),
+            text=True,
+            check=True,
+        )
 
         bucket = get_s3_bucket()
         if bucket:
-            object = bucket.Object(f"{name}/ocdadata_{name}.sqlite")
+            object = bucket.Object(f"{name}/ocdsdata_{name}.sqlite")
             object.upload_file(
-                f'{tmpdirname}/{name}.sqlite', ExtraArgs={"ACL": "public-read"}
+                f"{tmpdirname}/{name}.sqlite", ExtraArgs={"ACL": "public-read"}
             )
-            metadata_object = bucket.Object(f"{name}/metadata/sqlite_upload_dates/{date}")
+            metadata_object = bucket.Object(
+                f"{name}/metadata/sqlite_upload_dates/{date}"
+            )
             metadata_object.put(ACL="public-read", Body=b"")
 
 
@@ -1392,6 +1400,91 @@ def _make_notebooks():
             make_notebook(schema)
 
 
+def parse_rst_for_country_and_links():
+    import pyparsing as p
+
+    toStart = p.SkipTo(
+        p.LineStart() + p.FollowedBy("A" + p.OneOrMore(p.Word(p.alphanums)) + "-----")
+    ).suppress()
+
+    toTitle = p.SkipTo(
+        p.LineStart() + p.FollowedBy(p.OneOrMore(p.Word(p.alphanums)) + "--")
+    ).suppress()
+    title = (
+        p.LineStart()
+        + p.OneOrMore(p.Word(p.alphanums))
+        + p.LineEnd().suppress()
+        + p.Literal("--").suppress()
+    )
+    detail = (
+        p.SkipTo(".. autoclass:: ", include=True).suppress()
+        + p.SkipTo(p.LineEnd())
+        + p.SkipTo("scrapy crawl ", include=True).suppress()
+        + p.SkipTo(p.LineEnd())
+    )
+
+    all_ = toStart + p.OneOrMore(
+        p.Group(toTitle + title + p.ZeroOrMore(p.Group(detail), stopOn=title))
+    )
+    ast = all_.parseFile(collect_path + "/docs/spiders.rst")
+
+    print(ast)
+
+
+def parse_collect_docs_scraper_info():
+
+    import lxml.html
+    import requests
+
+    docs_url = "https://kingfisher-collect.readthedocs.io/en/latest/spiders.html"
+
+    content = requests.get(docs_url).content
+
+    tree = lxml.html.fromstring(content)
+
+    spiders_section = tree.cssselect("#spiders")[0]
+
+    sections = spiders_section.cssselect(".section")
+
+    scrapers = {}
+
+    for section in sections:
+        heading = section.cssselect("h2")[0].text
+
+        dls = [dl for dl in section.iterchildren("dl")]
+        if not dls:
+            continue
+
+        pres = section.cssselect("div pre")
+
+        assert len(dls) == len(pres)
+
+        for dl, pre in zip(dls, pres):
+            text = pre.text_content().strip()
+            assert "scrapy crawl" in text
+            scraper = text.split(" ")[-1]
+
+            crawler_id = dl.cssselect("dt")[0].attrib["id"]
+
+            inner_dl = dl.cssselect("dd dl")
+            extra_info = {}
+            if len(inner_dl):
+                dt_text = [
+                    dt.text_content().strip() for dt in inner_dl[0].iterchildren("dt")
+                ]
+                dd_text = [
+                    dd.text_content().strip() for dd in inner_dl[0].iterchildren("dd")
+                ]
+                extra_info = dict(zip(dt_text, dd_text))
+            scrapers[scraper] = {
+                "category": heading,
+                "extra_info": extra_info,
+                "docs_link": f"{docs_url}#{crawler_id}",
+            }
+
+    return scrapers
+
+
 @cli.command("collect-stats")
 def _collect_stats():
     collect_stats()
@@ -1400,6 +1493,8 @@ def _collect_stats():
 def collect_stats():
 
     out = {}
+
+    scraper_info = parse_collect_docs_scraper_info()
 
     for scraper in scraper_list():
         out[scraper] = {
@@ -1414,6 +1509,7 @@ def collect_stats():
             "field_types": {},
             "table_stats": {},
             "job_info": {},
+            "scraper_info": scraper_info.get(scraper, {}),
         }
 
     bucket = get_s3_bucket()

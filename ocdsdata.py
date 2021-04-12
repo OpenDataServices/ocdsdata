@@ -503,12 +503,6 @@ def _create_base_tables(schema):
     create_base_tables(schema)
 
 
-@cli.command("compile-releases")
-@click.argument("schema")
-def _compile_releases(schema):
-    compile_releases(schema)
-
-
 def compile_releases(schema):
     with tempfile.TemporaryDirectory() as tmpdirname:
         csv_file_path = tmpdirname + "/compiled_release.csv"
@@ -568,6 +562,12 @@ def compile_releases(schema):
                 DROP TABLE IF EXISTS _tmp_compiled_releases;
             """
             )
+
+
+@cli.command("compile-releases")
+@click.argument("schema")
+def _compile_releases(schema):
+    compile_releases(schema)
 
 
 EMIT_OBJECT_PATHS = [

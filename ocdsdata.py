@@ -637,7 +637,7 @@ def path_info(full_path, no_index_path):
         ".".join(str(key) for key in parent_path) for parent_path in parent_paths
     ]
     parent_keys_no_index = [
-        ".".join(str(key) for key in parent_path if not isinstance(key, int))
+        "_".join(str(key) for key in parent_path if not isinstance(key, int))
         for parent_path in parent_paths
     ]
     object_type = "_".join(str(key) for key in no_index_path) or "release"

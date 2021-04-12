@@ -115,7 +115,7 @@ def create_table(table, schema, sql, **params):
     schema : string
         Postgres schema to use.
     sql : string
-    SQL to create table can be parametarized by SQLAlchemy parms that start with a `:` e.g `:param`.
+        SQL to create table can be parametarized by SQLAlchemy parms that start with a `:` e.g `:param`.
     params : key (string), values (any)
         keys are params found in sql and values are the values to be replaced.
     """
@@ -187,13 +187,14 @@ def export_all(name, schema, date):
     export_pgdump(schema, name, date)
 
 
-@cli.command("create-schema")
-@click.argument("schema")
-def _create_schema(schema):
-    create_schema(schema)
-
-
 def create_schema(schema):
+    """Create Postgres Schema.
+
+    Parameters
+    ----------
+    schema : string
+        Postgres schema to create.
+    """
     engine = get_engine()
     with engine.begin() as connection:
         connection.execute(
@@ -202,40 +203,66 @@ def create_schema(schema):
         )
 
 
-@cli.command("rename-schema")
+@cli.command("create-schema", help=_first_doc_line(create_schema))
 @click.argument("schema")
-@click.argument("new_schema")
-def _rename_schema(schema, new_schema):
-    rename_schema(schema, new_schema)
+def _create_schema(schema):
+    create_schema(schema)
 
 
 def rename_schema(schema, new_schema):
+    """Rename Postgres Schema.
+
+    Parameters
+    ----------
+    schema : string
+        Postgres schema to rename.
+    new_schema : string
+        New schema name.
+    """
     engine = get_engine()
     drop_schema(new_schema)
     with engine.begin() as connection:
         connection.execute(f"""ALTER SCHEMA "{schema}" RENAME TO "{new_schema}";""")
 
 
-@cli.command("drop-schema")
+@cli.command("rename-schema", help=_first_doc_line(rename_schema))
 @click.argument("schema")
-def _drop_schema(schema):
-    drop_schema(schema)
+@click.argument("new_schema")
+def _rename_schema(schema, new_schema):
+    rename_schema(schema, new_schema)
 
 
 def drop_schema(schema):
+    """Drop Postgres Schema.
+
+    Parameters
+    ----------
+    schema : string
+        Postgres schema to drop.
+    """
     engine = get_engine()
     with engine.begin() as connection:
         connection.execute(f"""DROP SCHEMA IF EXISTS {schema} CASCADE;""")
 
 
-@cli.command("scrape")
-@click.argument("name")
+@cli.command("drop-schema", help=_first_doc_line(drop_schema))
 @click.argument("schema")
-def _scrape(name, schema):
-    scrape(name, schema)
+def _drop_schema(schema):
+    drop_schema(schema)
 
 
 def scrape(name, schema):
+    """Scrape data into postgres.
+
+    Creates "_scrape_data" and "_job_info" tables.
+
+    Parameters
+    ----------
+    name : string
+        Name of scraper.
+    schema : string
+        Postgres schema to put scrape data in.
+    """
     data_dir = this_path / "data" / schema
     shutil.rmtree(data_dir, ignore_errors=True)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -246,7 +273,7 @@ def scrape(name, schema):
         connection.execute(
             """DROP TABLE IF EXISTS _scrape_data;
                DROP TABLE IF EXISTS _job_info;
-               CREATE TABLE _scrape_data(name TEXT, url TEXT, data_type TEXT, file_name TEXT,
+               CREATE TABLE _scrape_data(id SERIAL, name TEXT, url TEXT, data_type TEXT, file_name TEXT,
                                          valid BOOLEAN, data JSONB, error_data TEXT);
                CREATE TABLE _job_info(name TEXT, info JSONB, logs TEXT);
             """
@@ -337,7 +364,7 @@ def scrape(name, schema):
         )
 
         dbapi_conn = connection.connection
-        copy_sql = "COPY _scrape_data FROM STDIN WITH CSV"
+        copy_sql = "COPY _scrape_data (name, url, data_type, file_name, valid, data, error_data) FROM STDIN WITH CSV"
         cur = dbapi_conn.cursor()
         cur.copy_expert(copy_sql, f)
 
@@ -351,18 +378,28 @@ def scrape(name, schema):
     shutil.rmtree(data_dir)
 
 
-@cli.command("create-base-tables")
+@cli.command("scrape", help=_first_doc_line(scrape))
+@click.argument("name")
 @click.argument("schema")
-def _create_base_tables(schema):
-    create_base_tables(schema)
+def _scrape(name, schema):
+    scrape(name, schema)
 
 
 def create_base_tables(schema, drop_scrape=True):
+    """Create "_compiled_release" and "_package_data" tables"
+
+    Parameters
+    ----------
+    schema : string
+        Postgres schema where the "_scrape_data" table is.
+    drop_scrape : boolean default True
+        Drop the _scrape_data table when finished with it.
+    """
     engine = get_engine(schema)
 
     package_data_sql = """
        SELECT
-           distinct md5((data - 'releases' - 'records')::text),
+           id,
            data - 'releases' - 'records' package_data
        FROM
            _scrape_data
@@ -385,7 +422,7 @@ def create_base_tables(schema, drop_scrape=True):
            url,
            data_type,
            file_name,
-           null package_data,
+           id package_data_id,
            coalesce(release ->> 'ocid', gen_random_uuid()::text) ocid,
            jsonb_agg(release) release_list,
            null rest_of_record,
@@ -397,7 +434,7 @@ def create_base_tables(schema, drop_scrape=True):
        WHERE
            data_type in ('release_package')
 
-       GROUP BY name, url, data_type, file_name, coalesce(release ->> 'ocid', gen_random_uuid()::text)
+       GROUP BY name, url, data_type, file_name, id, coalesce(release ->> 'ocid', gen_random_uuid()::text)
 
        UNION ALL
 
@@ -407,7 +444,7 @@ def create_base_tables(schema, drop_scrape=True):
            url,
            data_type,
            file_name,
-           to_jsonb(md5((data - 'releases' - 'records')::text)) package_data,
+           id package_data_id,
            record ->> 'ocid',
            record -> 'releases',
            record - 'compiledRelease' rest_of_record,
@@ -431,6 +468,12 @@ def create_base_tables(schema, drop_scrape=True):
     if result.count == 0:
         print("No compiled releases!")
         sys.exit(1)
+
+
+@cli.command("create-base-tables", help=_first_doc_line(create_base_tables))
+@click.argument("schema")
+def _create_base_tables(schema):
+    create_base_tables(schema)
 
 
 @cli.command("compile-releases")
@@ -1251,11 +1294,20 @@ def export_sqlite(schema, name, date):
             check=True,
         )
 
+        subprocess.run(
+            ["gzip", "-k", "-9", f"{tmpdirname}/{name}.sqlite"],
+            check=True
+        )
+
         bucket = get_s3_bucket()
         if bucket:
             object = bucket.Object(f"{name}/ocdsdata_{name}.sqlite")
             object.upload_file(
                 f"{tmpdirname}/{name}.sqlite", ExtraArgs={"ACL": "public-read"}
+            )
+            object = bucket.Object(f"{name}/ocdsdata_{name}.sqlite.gz")
+            object.upload_file(
+                f"{tmpdirname}/{name}.sqlite.gz", ExtraArgs={"ACL": "public-read"}
             )
             metadata_object = bucket.Object(
                 f"{name}/metadata/sqlite_upload_dates/{date}"

@@ -45,6 +45,32 @@ def _first_doc_line(function):
     return function.__doc__.split("\n")[0]
 
 
+def _patched_schema(connection):
+    extension_result = connection.execute(
+        """
+        SELECT
+            extension
+        FROM
+            _package_data, jsonb_array_elements(package_data -> 'extensions') extension
+        WHERE
+            jsonb_typeof(package_data -> 'extensions') = 'array' group by 1;
+    """
+    )
+
+    extensions = [row.extension for row in extension_result]
+
+    try:
+        builder = ProfileBuilder("1__1__4", extensions)
+        patched_schema = builder.patched_release_schema()
+        print(f'Exensions being used: {" ".join(extensions)}')
+    except Exception:
+        print('Warning: Extensions have not been built defaulting to standard schema')
+        builder = ProfileBuilder("1__1__4", {})
+        patched_schema = builder.patched_release_schema()
+
+    return patched_schema
+
+
 @functools.lru_cache(None)
 def get_engine(schema=None, db_uri=None, pool_size=1):
     """Get SQLAlchemy engine
@@ -184,6 +210,7 @@ def export_all(name, schema, date):
     export_xlsx(schema, name, date)
     export_sqlite(schema, name, date)
     export_bigquery(schema, name, date)
+    export_stats(schema, name, date)
     export_pgdump(schema, name, date)
 
 
@@ -495,7 +522,9 @@ def compile_releases(schema):
         """
         )
 
-        merger = ocdsmerge.Merger()
+        patched_schema = _patched_schema(engine)
+
+        merger = ocdsmerge.Merger(patched_schema)
         results = engine.execute(
             "SELECT compiled_release_id, release_list FROM _compiled_releases WHERE compiled_release is null"
         )
@@ -794,9 +823,6 @@ def _schema_analysis(schema):
 
 def schema_analysis(schema):
 
-    builder = ProfileBuilder("1__1__4", {})
-    standard_schema = builder.patched_release_schema()
-
     create_table(
         "_object_type_aggregate",
         schema,
@@ -828,14 +854,11 @@ def schema_analysis(schema):
         """,
     )
 
+    patched_schema = _patched_schema(get_engine(schema))
+
     schema_info = process_schema_object(
-        tuple(), tuple(), {}, JsonRef.replace_refs(standard_schema)
+        tuple(), tuple(), {}, JsonRef.replace_refs(patched_schema)
     )
-    for item in schema_info:
-        if len(item) > 31:
-            print(item)
-            print(shorten_sheet_name(item))
-            print(len(shorten_sheet_name(item)))
 
     with get_engine(schema).begin() as connection:
         result = connection.execute(

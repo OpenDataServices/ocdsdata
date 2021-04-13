@@ -197,7 +197,7 @@ def create_from_scraper(name, schema):
     compile_releases(schema)
     release_objects(schema)
     schema_analysis(schema)
-    postgres_tables(schema, drop_release_objects=True)
+    postgres_tables(schema, drop_release_objects=False)
 
 
 @cli.command()
@@ -821,15 +821,24 @@ def _schema_analysis(schema):
     schema_analysis(schema)
 
 
+DATE_RE = r'^(\d{4})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$'
+
+
 def schema_analysis(schema):
 
     create_table(
         "_object_type_aggregate",
         schema,
-        """SELECT
+        f"""SELECT
               object_type,
               each.key,
-              jsonb_typeof(value) value_type,
+              CASE
+                 WHEN jsonb_typeof(value) != 'string'
+                     THEN jsonb_typeof(value)
+                 WHEN (value ->> 0) ~ '{DATE_RE}'
+                     THEN 'datetime'
+                 ELSE 'string'
+              END value_type,
               count(*)
            FROM
               _release_objects ro, jsonb_each(object) each
@@ -850,6 +859,8 @@ def schema_analysis(schema):
               SUM("count") AS "count"
            FROM
               _object_type_aggregate
+           WHERE
+              value_type != 'null'
            GROUP BY 1,2;
         """,
     )
@@ -939,6 +950,8 @@ def create_field_sql(object_details):
             field = f'"{name}" JSONB'
         elif type == "boolean":
             field = f'"{name}" boolean'
+        elif type == "datetime":
+            field = f'"{name}" timestamp'
         else:
             field = f'"{name}" TEXT'
         fields.append(f'"{name}"')
@@ -1147,6 +1160,8 @@ def create_avro_schema(object_type, object_details):
         type = item["type"]
         if type == "number":
             type = "double"
+        if type == "datetime":
+            type = "string"
 
         field = {
             "name": name_allowed_pattern.sub("", item["name"]),

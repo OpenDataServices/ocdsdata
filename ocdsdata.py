@@ -446,10 +446,8 @@ def create_base_tables(schema, drop_scrape=True):
        SELECT
            min(nextval('_generated_release_id')) compiled_release_id,
            name,
-           url,
            data_type,
-           file_name,
-           id package_data_id,
+           jsonb_agg(id) package_data_ids,
            coalesce(release ->> 'ocid', gen_random_uuid()::text) ocid,
            jsonb_agg(release) release_list,
            null rest_of_record,
@@ -461,17 +459,15 @@ def create_base_tables(schema, drop_scrape=True):
        WHERE
            data_type in ('release_package')
 
-       GROUP BY name, url, data_type, file_name, id, coalesce(release ->> 'ocid', gen_random_uuid()::text)
+       GROUP BY name, data_type, coalesce(release ->> 'ocid', gen_random_uuid()::text)
 
        UNION ALL
 
        SELECT
            nextval('_generated_release_id'),
            name,
-           url,
            data_type,
-           file_name,
-           id package_data_id,
+           jsonb_build_array(id),
            record ->> 'ocid',
            record -> 'releases',
            record - 'compiledRelease' rest_of_record,

@@ -938,11 +938,16 @@ def schema_analysis(schema):
             )
 
 
-def create_field_sql(object_details):
+def create_field_sql(object_details, sqlite=False):
     fields = []
+    lowered_fields = set()
     fields_with_type = []
-    for item in object_details:
+    for num, item in enumerate(object_details):
         name = item["name"]
+
+        if sqlite and name.lower() in lowered_fields:
+            name = f'{name}_{num}'
+
         type = item["type"]
         if type == "number":
             field = f'"{name}" numeric'
@@ -954,6 +959,8 @@ def create_field_sql(object_details):
             field = f'"{name}" timestamp'
         else:
             field = f'"{name}" TEXT'
+
+        lowered_fields.add(name.lower())
         fields.append(f'"{name}"')
         fields_with_type.append(field)
 
@@ -1302,7 +1309,7 @@ def export_sqlite(schema, name, date):
                 cur = dbapi_conn.cursor()
                 cur.copy_expert(copy_sql, out)
 
-            _, field_def = create_field_sql(object_details)
+            _, field_def = create_field_sql(object_details, sqlite=True)
             import_sql = f"""
             .mode csv
             CREATE TABLE "{object_type}" ({field_def}) ;

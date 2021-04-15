@@ -515,12 +515,13 @@ def compile_releases(schema):
         patched_schema = _patched_schema(engine)
 
         merger = ocdsmerge.Merger(patched_schema)
-        results = engine.execute(
-            "SELECT compiled_release_id, release_list FROM _compiled_releases WHERE compiled_release is null"
-        )
 
         print("Making CSV file")
-        with gzip.open(str(csv_file_path), "wt", newline="") as csv_file, Timer():
+        with gzip.open(str(csv_file_path), "wt", newline="") as csv_file, engine.begin() as connection, Timer():
+            connection = connection.execution_options(stream_results=True, max_row_buffer=1000)
+            results = connection.execute(
+                "SELECT compiled_release_id, release_list FROM _compiled_releases WHERE compiled_release is null"
+            )
             csv_writer = csv.writer(csv_file)
             for num, result in enumerate(results):
                 try:
@@ -732,12 +733,9 @@ def release_objects(schema):
         """
     )
 
-    results = engine.execute(
-        "SELECT compiled_release_id, compiled_release FROM _compiled_releases"
-    )
-
     with tempfile.TemporaryDirectory() as tmpdirname:
         with engine.begin() as connection, Timer():
+            connection = connection.execution_options(stream_results=True, max_row_buffer=1000)
             results = connection.execute(
                 "SELECT compiled_release_id, compiled_release FROM _compiled_releases"
             )

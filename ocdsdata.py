@@ -500,6 +500,15 @@ def _create_base_tables(schema):
 
 
 def compile_releases(schema):
+    """Merge releases into a compiled_release.
+
+    For release packages merge releases to _compiled_release.compiled_release column.
+
+    Parameters
+    ----------
+    schema : string
+        Postgres schema where the "_scrape_data" table is.
+    """
     with tempfile.TemporaryDirectory() as tmpdirname:
         csv_file_path = tmpdirname + "/compiled_release.csv"
 
@@ -561,7 +570,7 @@ def compile_releases(schema):
             )
 
 
-@cli.command("compile-releases")
+@cli.command("compile-releases", help=_first_doc_line(compile_releases))
 @click.argument("schema")
 def _compile_releases(schema):
     compile_releases(schema)
@@ -758,10 +767,6 @@ def release_objects(schema):
 
 
 def process_schema_object(path, current_name, flattened, obj):
-    """
-    Return a dictionary with a flattened representation of the schema. `patternProperties` are skipped as we don't
-    want them as field names (a regular expression string) in the database.
-    """
     string_path = ("_".join(path)) or "release"
 
     properties = obj.get("properties", {})  # an object may have patternProperties only

@@ -31,13 +31,13 @@ CLI Use
 Only one CLI command is needed:
 
 ```
-python ocdsdata.py import <scraper> <schema>
+python ocdsdata.py import_scraper <scraper> <schema>
 ```
 
 This will scrape data from a <scraper> defined in [Kingfisher Collect Documentation](https://kingfisher-collect.readthedocs.io/en/latest/spiders.html) and import it into a the PostgreSQL <schema>.  For example to import zambia OCDS data into a PostgreSQL schema named `my_zambia_data` run:
 
 ```
-python ocdsdata.py import zambia my_zambia_data
+python ocdsdata.py import_scraper zambia my_zambia_data
 ```
 
 This process may take a long time.

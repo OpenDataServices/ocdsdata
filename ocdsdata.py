@@ -189,7 +189,7 @@ def export_scrapers():
 @cli.command()
 @click.argument("name")
 @click.argument("schema")
-def create_from_scraper(name, schema):
+def import(name, schema):
     """Create all postgres tables for a scraper into a target schema."""
     create_schema(schema)
     scrape(name, schema)

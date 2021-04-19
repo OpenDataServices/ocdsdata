@@ -1,5 +1,6 @@
 import base64
 import csv
+import datetime
 import functools
 import gzip
 import json
@@ -17,9 +18,11 @@ from textwrap import dedent
 
 import boto3
 import click
+import lxml.html
 import ocdsmerge
 import openpyxl
 import orjson
+import requests
 import sqlalchemy as sa
 from codetiming import Timer
 from fastavro import parse_schema, writer
@@ -129,6 +132,17 @@ def get_s3_bucket():
     s3 = session.resource("s3", endpoint_url=os.environ.get("AWS_S3_ENDPOINT_URL"))
     bucket = s3.Bucket(os.environ.get("AWS_S3_BUCKET"))
     return bucket
+
+
+def get_drive_service():
+    json_acct_info = orjson.loads(
+        base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"])
+    )
+    credentials = service_account.Credentials.from_service_account_info(
+        json_acct_info
+    )
+
+    return build("drive", "v3", credentials=credentials)
 
 
 def create_table(table, schema, sql, **params):
@@ -1425,16 +1439,42 @@ def export_pgdump(schema, name, date):
         )
         metadata_object = bucket.Object(f"{name}/metadata/pg_dump_upload_dates/{date}")
         metadata_object.put(ACL="public-read", Body=b"")
-        make_notebook(name)
 
+
+def _make_table_markdown(schema, info):
+    all_field_types = requests.get(info['field_types']['latest']).json()
+
+    field_type_strings = {}
+
+    for field_types in all_field_types:
+        fields_str = ", ".join([f'{object_detail["name"]}' for object_detail in  field_types["object_details"]])
+        if len(fields_str) > 200:
+            fields_str = fields_str[:200] + '...'
+
+        field_type_strings[field_types["object_type"]] = fields_str
+
+    lines = ['| Table | Row Count | Fields |']
+    lines.append('|-|-|-|')
+    for table, count in info.get('table_stats', {}).items():
+        lines.append(f'| [{table}](https://ocds-downloads.opendata.coop/source/{schema}#table-{table}) | {count} | {field_type_strings[table]} |')
+
+    return json.dumps("\n".join(lines))[1:-1]
+
+FOLDER_ID="1wNkeGqdDP3wQR4xe8yyFreOez9U47Vz8"
 
 @cli.command("make-notebook")
 @click.argument("schema")
 def _make_notebook(schema):
-    make_notebook(schema)
+    bucket = get_s3_bucket()
+    stats_object = bucket.Object("metadata/stats.json")
+    stats = json.load(stats_object.get()["Body"])
+    for schema_in_stats, info in stats.items():
+        if schema_in_stats == schema:
+            make_notebook(schema, info)
+            break
 
 
-def make_notebook(schema):
+def make_notebook(schema, info, folder_id=FOLDER_ID):
     bucket = get_s3_bucket()
 
     with tempfile.TemporaryDirectory() as tmpdirname, open(
@@ -1445,39 +1485,22 @@ def make_notebook(schema):
         template_text = template_text.replace(
             "Zambia", schema.replace("_", " ").capitalize()
         )
+
+        template_text = template_text.replace('{{tables}}', _make_table_markdown(schema, info))
+
         with open(tmpdirname + "/notebook.ipynb", "w+") as output:
             output.write(template_text)
 
-        json_acct_info = orjson.loads(
-            base64.b64decode(os.environ["GOOGLE_SERVICE_ACCOUNT"])
-        )
-        credentials = service_account.Credentials.from_service_account_info(
-            json_acct_info
-        )
+        drive_service = get_drive_service()
 
-        service = build("drive", "v3", credentials=credentials)
-
-        response = (
-            service.files()
-            .list(
-                q=f"mimeType='application/vnd.google.colaboratory' and name = '{schema}.ipynb'",
-                spaces="drive",
-                pageSize=1000,
-            )
-            .execute()
-        )
-
-        for file in response.get("files", []):
-            service.files().delete(fileId=file["id"]).execute()
-
-        folder_id = "1wNkeGqdDP3wQR4xe8yyFreOez9U47Vz8"
+        folder_id = folder_id
         file_metadata = {"name": f"{schema}.ipynb", "parents": [folder_id]}
         media = MediaFileUpload(
             tmpdirname + "/notebook.ipynb",
             mimetype="application/vnd.google.colaboratory",
         )
         file = (
-            service.files()
+            drive_service.files()
             .create(body=file_metadata, media_body=media, fields="id")
             .execute()
         )
@@ -1486,51 +1509,14 @@ def make_notebook(schema):
         pg_dump_object.put(ACL="public-read", Body=orjson.dumps(file))
 
 
-@cli.command("make-notebooks")
-def _make_notebooks():
-    bucket = get_s3_bucket()
-    stats_object = bucket.Object("metadata/stats.json")
-    stats = json.load(stats_object.get()["Body"])
+def make_notebooks(stats=None, folder_id=FOLDER_ID):
     for schema, info in stats.items():
-        if info.get("pg_dump"):
-            make_notebook(schema)
-
-
-def parse_rst_for_country_and_links():
-    import pyparsing as p
-
-    toStart = p.SkipTo(
-        p.LineStart() + p.FollowedBy("A" + p.OneOrMore(p.Word(p.alphanums)) + "-----")
-    ).suppress()
-
-    toTitle = p.SkipTo(
-        p.LineStart() + p.FollowedBy(p.OneOrMore(p.Word(p.alphanums)) + "--")
-    ).suppress()
-    title = (
-        p.LineStart()
-        + p.OneOrMore(p.Word(p.alphanums))
-        + p.LineEnd().suppress()
-        + p.Literal("--").suppress()
-    )
-    detail = (
-        p.SkipTo(".. autoclass:: ", include=True).suppress()
-        + p.SkipTo(p.LineEnd())
-        + p.SkipTo("scrapy crawl ", include=True).suppress()
-        + p.SkipTo(p.LineEnd())
-    )
-
-    all_ = toStart + p.OneOrMore(
-        p.Group(toTitle + title + p.ZeroOrMore(p.Group(detail), stopOn=title))
-    )
-    ast = all_.parseFile(collect_path + "/docs/spiders.rst")
-
-    print(ast)
+        if info.get('sqlite_gz'):
+            make_notebook(schema, info, folder_id)
 
 
 def parse_collect_docs_scraper_info():
 
-    import lxml.html
-    import requests
 
     docs_url = "https://kingfisher-collect.readthedocs.io/en/latest/spiders.html"
 
@@ -1597,6 +1583,7 @@ def collect_stats():
             "csv": {},
             "xlsx": {},
             "sqlite": {},
+            "sqlite_gz": {},
             "pg_dump": {},
             "avro": {"files": {}},
             "big_query": {},
@@ -1626,6 +1613,8 @@ def collect_stats():
             out[scraper]["csv"].update(file_name=file_name, url=item_url)
         if file_name.endswith(".sqlite"):
             out[scraper]["sqlite"].update(file_name=file_name, url=item_url)
+        if file_name.endswith(".sqlite.gz"):
+            out[scraper]["sqlite_gz"].update(file_name=file_name, url=item_url)
         if file_name.endswith("pg_dump"):
             out[scraper]["pg_dump"].update(file_name=file_name, url=item_url)
         if file_name.endswith("xlsx"):
@@ -1654,6 +1643,7 @@ def collect_stats():
 
         if "field_types" in parts[2]:
             out[scraper]["field_types"]["latest"] = item_url
+            out[scraper]["field_types"]["latest_item"] = item
             out[scraper]["field_types"][file_name[:-5]] = item_url
             out[scraper]["field_types"]["latest_date"] = file_name[:-5]
 
@@ -1665,9 +1655,12 @@ def collect_stats():
 
     for scraper, data in out.items():
         latest_field_info_item = data["field_info"].pop("latest_item", None)
-        if latest_field_info_item:
+        latest_field_types_item = data["field_types"].pop("latest_item", None)
+        if latest_field_info_item and latest_field_types_item:
+            field_types_data = json.load(latest_field_types_item.get()["Body"])
+            object_type_order = {field_types['object_type']: num for num, field_types in enumerate(field_types_data)}
             field_info_data = json.load(latest_field_info_item.get()["Body"])
-            for item in field_info_data:
+            for item in sorted(field_info_data, key = lambda x: object_type_order[x['object_type']]):
                 if item["key"] == "_link":
                     data["table_stats"][item["object_type"]] = item["count"]
 
@@ -1675,6 +1668,18 @@ def collect_stats():
         if latest_job_info_item:
             job_info_data = json.load(latest_job_info_item.get()["Body"])
             data["job_info"]["latest_info"] = job_info_data["info"]
+
+    drive_service = get_drive_service()
+
+    file_metadata = {
+        'name': str(datetime.datetime.utcnow())[:19],
+        'mimeType': 'application/vnd.google-apps.folder',
+        "parents": [FOLDER_ID]
+    }
+    file = drive_service.files().create(body=file_metadata,
+                                        fields='id').execute()
+
+    make_notebooks(out, file.get('id'))
 
     stats_object = bucket.Object("metadata/stats.json")
     stats_object.put(ACL="public-read", Body=orjson.dumps(out))

@@ -821,7 +821,7 @@ def process_schema_object(path, current_name, flattened, obj):
 def link_info(link_name):
     name = link_name[6:]
     if not name:
-        doc = "Link to this row that can be found in other rows"
+        doc = "Link to this row that can be found in other tables"
     else:
         doc = f"Link to the {name} row that this row relates to"
 

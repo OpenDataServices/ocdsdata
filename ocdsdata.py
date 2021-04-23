@@ -1486,17 +1486,22 @@ def make_notebook(schema, info, folder_id=FOLDER_ID):
             "Zambia", schema.replace("_", " ").capitalize()
         )
 
-        template_text = template_text.replace('{{tables}}', _make_table_markdown(schema, info))
+        colab_text = template_text.replace('{{tables}}', _make_table_markdown(schema, info))
 
-        with open(tmpdirname + "/notebook.ipynb", "w+") as output:
-            output.write(template_text)
+        ipynb_text = colab_text.replace('%load_ext google.colab.data_table', '!pip install ipython-sql seaborn pandas >> pip.log')
+
+        pg_dump_object = bucket.Object(f"{schema}/ocdsdata_{schema}_notebook.ipynb")
+        pg_dump_object.put(ACL="public-read", Body=ipynb_text.encode())
+
+        with open(tmpdirname + "/notebook-colab.ipynb", "w+") as output:
+            output.write(colab_text)
 
         drive_service = get_drive_service()
 
         folder_id = folder_id
         file_metadata = {"name": f"{schema}.ipynb", "parents": [folder_id]}
         media = MediaFileUpload(
-            tmpdirname + "/notebook.ipynb",
+            tmpdirname + "/notebook-colab.ipynb",
             mimetype="application/vnd.google.colaboratory",
         )
         file = (
@@ -1509,7 +1514,7 @@ def make_notebook(schema, info, folder_id=FOLDER_ID):
         pg_dump_object.put(ACL="public-read", Body=orjson.dumps(file))
 
 
-def make_notebooks(stats=None, folder_id=FOLDER_ID):
+def make_notebooks(stats, folder_id=FOLDER_ID):
     for schema, info in stats.items():
         if info.get('sqlite_gz'):
             make_notebook(schema, info, folder_id)
@@ -1588,6 +1593,7 @@ def collect_stats():
             "avro": {"files": {}},
             "big_query": {},
             "notebookIdFile": "",
+            "ipynb": {},
             "field_info": {},
             "field_types": {},
             "table_stats": {},
@@ -1619,6 +1625,8 @@ def collect_stats():
             out[scraper]["pg_dump"].update(file_name=file_name, url=item_url)
         if file_name.endswith("xlsx"):
             out[scraper]["xlsx"].update(file_name=file_name, url=item_url)
+        if file_name.endswith("ipynb"):
+            out[scraper]["ipynb"].update(file_name=file_name, url=item_url)
         if file_name.endswith("avro"):
             obj = re.sub(f"^ocdsdata_{scraper}_", "", file_name[:-5])
             out[scraper]["avro"]["files"][obj] = item_url

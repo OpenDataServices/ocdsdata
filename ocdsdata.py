@@ -834,7 +834,8 @@ def _schema_analysis(schema):
     schema_analysis(schema)
 
 
-DATE_RE = r'^(\d{4})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$'
+# only accept years 1000-3999
+DATE_RE = r'^([1-3]\d{3})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$'
 
 
 def schema_analysis(schema):

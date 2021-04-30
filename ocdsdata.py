@@ -553,6 +553,7 @@ def compile_releases(schema):
                     )
                     error = ""
                 except Exception as e:
+                    traceback.print_exc()
                     compiled_release = {}
                     error = str(e)
                 csv_writer.writerow(
@@ -1360,18 +1361,32 @@ def export_sqlite(schema, name, date):
 
         bucket = get_s3_bucket()
         if bucket:
-            object = bucket.Object(f"{name}/ocdsdata_{name}.sqlite")
-            object.upload_file(
-                f"{tmpdirname}/{name}.sqlite", ExtraArgs={"ACL": "public-read"}
-            )
-            object = bucket.Object(f"{name}/ocdsdata_{name}.sqlite.gz")
-            object.upload_file(
-                f"{tmpdirname}/{name}.sqlite.gz", ExtraArgs={"ACL": "public-read"}
-            )
-            metadata_object = bucket.Object(
-                f"{name}/metadata/sqlite_upload_dates/{date}"
-            )
-            metadata_object.put(ACL="public-read", Body=b"")
+
+            @retry(tries=5)
+            def upload_sqlite():
+                object = bucket.Object(f"{name}/ocdsdata_{name}.sqlite")
+                object.upload_file(
+                    f"{tmpdirname}/{name}.sqlite", ExtraArgs={"ACL": "public-read"}
+                )
+
+            @retry(tries=5)
+            def upload_sqlite_gz():
+                object = bucket.Object(f"{name}/ocdsdata_{name}.sqlite.gz")
+                object.upload_file(
+                    f"{tmpdirname}/{name}.sqlite.gz", ExtraArgs={"ACL": "public-read"}
+                )
+
+            @retry(tries=5)
+            def upload_metadata():
+                metadata_object = bucket.Object(
+                    f"{name}/metadata/sqlite_upload_dates/{date}"
+                )
+                metadata_object.put(ACL="public-read", Body=b"")
+
+            upload_sqlite()
+            upload_sqlite_gz()
+            upload_metadata()
+
 
 
 @cli.command("export-stats")

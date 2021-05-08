@@ -12,7 +12,7 @@ import sys
 import tempfile
 import traceback
 import zipfile
-from collections import Counter, deque
+from collections import Counter, deque, defaultdict
 from pathlib import Path
 from retry import retry
 from textwrap import dedent
@@ -1616,6 +1616,7 @@ def collect_stats():
             "table_stats": {},
             "job_info": {},
             "scraper_info": scraper_info.get(scraper, {}),
+            "latest_logs": {},
         }
 
     bucket = get_s3_bucket()
@@ -1678,6 +1679,27 @@ def collect_stats():
             out[scraper]["job_info"][file_name[:-5]] = item_url
             out[scraper]["job_info"]["latest_date"] = file_name[:-5]
 
+    nested_dict = lambda: defaultdict(nested_dict)
+    all_logs = nested_dict()
+
+    for item in sorted(bucket.objects.all(), key=lambda x: x.key):
+        if not item.key.startswith('logs/'):
+            continue
+        item_url = f"{bucket_url}/{item.key}"
+
+        path_parts = item.key.split('/')
+
+        if len(path_parts) != 5:
+            continue
+
+        _, scraper, stage, date, file = path_parts
+
+        all_logs[scraper][stage][date][file] = item_url
+
+        if scraper in out:
+            out[scraper]['latest_logs'][stage] = item_url
+
+
     for scraper, data in out.items():
         latest_field_info_item = data["field_info"].pop("latest_item", None)
         latest_field_types_item = data["field_types"].pop("latest_item", None)
@@ -1708,6 +1730,10 @@ def collect_stats():
 
     stats_object = bucket.Object("metadata/stats.json")
     stats_object.put(ACL="public-read", Body=orjson.dumps(out))
+
+    logs_object = bucket.Object("metadata/logs.json")
+    logs_object.put(ACL="public-read", Body=orjson.dumps(all_logs))
+
 
 
 if __name__ == "__main__":

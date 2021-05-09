@@ -4,6 +4,7 @@ from pathlib import Path
 import hashlib
 
 from airflow.operators.python import PythonOperator
+from airflow.operators.dummy import DummyOperator
 from airflow.utils.dates import days_ago
 
 import os
@@ -157,13 +158,19 @@ def create_dag(dag_id):
             op_args=["drop_schema", dag_id, schema],
         )
 
+
+        fail_if_parents_do = DummyOperator(
+            task_id="fail_if_parents_do",
+        )
+
         create_schema >> scrape >> base_tables >> compile_release >> release_objects >> schema_analysis >> postgres_tables >> [
             export_csv,
             export_xlsx,
             export_bigquery,
             export_sqlite,
             export_stats,
-        ] >> rename_schema >> export_pgdump >> [drop_schema, drop_porocess_schema]
+        ] >> rename_schema >> export_pgdump >> [drop_schema, drop_porocess_schema, fail_if_parents_do]
+
 
     return dag
 

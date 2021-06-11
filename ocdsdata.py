@@ -1617,6 +1617,7 @@ def collect_stats():
             "job_info": {},
             "scraper_info": scraper_info.get(scraper, {}),
             "latest_logs": {},
+            "package_info": {},
         }
 
     bucket = get_s3_bucket()
@@ -1646,13 +1647,14 @@ def collect_stats():
         if file_name.endswith("ipynb"):
             out[scraper]["ipynb"].update(file_name=file_name, url=item_url)
         if file_name.endswith("avro"):
-            obj = re.sub(f"^ocdsdata_{scraper}_", "", file_name[:-5])
-            out[scraper]["avro"]["files"][obj] = item_url
             out[scraper]["big_query"].update(
                 url=f"https://console.cloud.google.com/bigquery?project=ocdsdata&p=ocdsdata&d={scraper}&page=dataset"
             )
         if file_name.endswith("_notebook.json"):
             out[scraper]["notebookIdFile"] = item_url
+
+        if file_name.endswith("package_info.json"):
+            out[scraper]["package_info"].update(requests.get(item_url).json())
 
         if parts[1] not in ("metadata", "metatdata"):
             continue

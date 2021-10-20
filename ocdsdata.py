@@ -356,7 +356,7 @@ def scrape(name, schema):
                         error_data = item["data"]
 
                 if isinstance(data, bytes):
-                    data = data.decode(item["encoding"])
+                    data = data.decode()
                 data = data.replace(r"\u0000", "")
 
                 count_data_types.update([item["data_type"]])
